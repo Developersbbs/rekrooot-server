@@ -1,0 +1,28 @@
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import morgan from "morgan";
+
+import healthRoute from "./routes/health.route.js";
+import { errorHandler } from "./middlewares/error.middleware.js";
+
+const app = express();
+
+/* core middleware */
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+app.use(morgan("dev"));
+
+/* routes */
+app.use("/health", healthRoute);
+
+/* 404 */
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found" });
+});
+
+/* error handler */
+app.use(errorHandler);
+
+export default app;
