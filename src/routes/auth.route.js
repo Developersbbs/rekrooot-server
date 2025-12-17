@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
+import { getAdminAuth } from "../config/firebaseAdmin.js";
 
 const router = Router();
 
@@ -20,6 +21,18 @@ router.get("/me", requireAuth, async (req, res, next) => {
     }
 
     return res.json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/logout", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+
+    await getAdminAuth().revokeRefreshTokens(uid);
+
+    return res.status(200).json({ message: "Logged out" });
   } catch (err) {
     next(err);
   }
