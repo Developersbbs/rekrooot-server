@@ -68,6 +68,7 @@ Table company {
   name varchar [not null]
   recruiter_admin_id objectid [unique, ref: - users.uid] // The main admin for this company
   subscription_status boolean [default: true]
+  created_by varchar [ref: > users.uid]
   created_at timestamp
   updated_at timestamp
 }
