@@ -4,6 +4,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import authRoute from "./routes/auth.route.js";
 import companyRoute from "./routes/company.route.js";
+import invitationRoute from "./routes/invitation.route.js";
 
 import healthRoute from "./routes/health.route.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
@@ -20,6 +21,7 @@ app.use(morgan("dev"));
 app.use("/health", healthRoute);
 app.use("/auth", authRoute);
 app.use("/companies", companyRoute);
+app.use("/invitations", invitationRoute);
 
 
 /* 404 */

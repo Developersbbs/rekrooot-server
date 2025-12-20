@@ -63,6 +63,21 @@ Table users {
   created_by varchar [ref: > users.uid]
 }
 
+Table invitations {
+  id objectid [pk]
+  email varchar [not null] // The person being invited
+  token varchar [not null, unique] // The secret key in the URL
+  
+  // The constraints we are enforcing on them
+  company_id objectid [not null, ref: > company.id]
+  team_id objectid [ref: > teams.id] // Optional (might not be assigned to a team yet)
+  role role_type [not null]
+  
+  invited_by objectid [not null, ref: > users.uid] // Audit: who sent it?
+  expires_at timestamp [not null] // Security: links should expire (e.g., 48 hours)
+  created_at timestamp [default: `now()`]
+}
+
 Table company {
   id objectid [pk]
   name varchar [not null]

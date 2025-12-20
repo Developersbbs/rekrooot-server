@@ -3,11 +3,14 @@ import mongoose from "mongoose";
 const userSchema = new mongoose.Schema(
   {
     username: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true, trim: true, lowercase: true },
     contact: { type: String },
 
     // Firebase UID as stable identifier (maps to DBDESIGN uid objectid concept)
     firebase_uid: { type: String, required: true, unique: true },
+
+    // Legacy field name used in some older DBs / indexes
+    firebaseUid: { type: String, unique: true, sparse: true },
 
     company_id: { type: mongoose.Schema.Types.ObjectId, ref: "company", default: null },
     team_id: { type: mongoose.Schema.Types.ObjectId, ref: "teams", default: null },
