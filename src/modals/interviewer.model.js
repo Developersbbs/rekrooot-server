@@ -35,9 +35,14 @@ const interviewerSchema = new Schema(
     technologies: [
       {
         type: Schema.Types.ObjectId,
-        ref: "Technology",
+        ref: "technologies",
       },
     ],
+    company_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      index: true,
+    },
     created_by: {
       type: Schema.Types.ObjectId,
       ref: "User",

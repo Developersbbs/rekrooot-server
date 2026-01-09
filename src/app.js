@@ -6,6 +6,7 @@ import authRoute from "./routes/auth.route.js";
 import companyRoute from "./routes/company.route.js";
 import invitationRoute from "./routes/invitation.route.js";
 import interviewerRoute from "./routes/interviewer.route.js";
+import interviewerAvailabilityRoute from "./routes/interviewerAvailability.route.js";
 import technologyRoute from "./routes/technology.route.js";
 
 import healthRoute from "./routes/health.route.js";
@@ -25,6 +26,7 @@ app.use("/auth", authRoute);
 app.use("/companies", companyRoute);
 app.use("/invitations", invitationRoute);
 app.use("/interviewers", interviewerRoute);
+app.use("/interviewers", interviewerAvailabilityRoute);
 app.use("/technologies", technologyRoute);
 
 

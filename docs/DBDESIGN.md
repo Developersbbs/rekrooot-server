@@ -38,7 +38,7 @@ Enum interview_status {
 Enum slot_status {
   "0" // UNAVAILABLE
   "1" // AVAILABLE
-  "2 " // BOOKED
+  "2" // BOOKED
 }
 
 // ==========================================
@@ -192,16 +192,33 @@ Table candidates {
   updated_at timestamp
 }
 
-// INVENTORY: Created by Admin/Interviewer
+// AVAILABILITY: Arbitrary intervals defined by Admin/Interviewer (in UTC)
+// This represents the base availability pattern, not individual bookings.
+Table interviewer_availability {
+  id objectid [pk]
+  interviewer_id objectid [not null, ref: > interviewer.id]
+
+  // UTC timestamps representing an arbitrary availability block
+  start_time timestamp [not null] // UTC
+  end_time timestamp [not null]   // UTC
+
+  created_by objectid [ref: > users.uid]
+  created_at timestamp
+}
+
+// INVENTORY: Concrete reservable / booked slots derived from availability
+// Each record represents a single candidate-reservable slot window.
 Table timeslots {
   id objectid [pk]
   interviewer_id objectid [not null, ref: > interviewer.id]
-  date date [not null]
-  start_time timestamp [not null]
-  end_time timestamp [not null]
+
+  // Normalized slot window in UTC
+  start_time timestamp [not null] // UTC
+  end_time timestamp [not null]   // UTC
+
   status slot_status [not null] // 0=UNAVAILABLE, 1=AVAILABLE, 2=BOOKED
   
-  created_by objectid
+  created_by objectid [ref: > users.uid]
   created_at timestamp
 }
 

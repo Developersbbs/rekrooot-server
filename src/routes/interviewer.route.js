@@ -100,6 +100,29 @@ router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
   }
 });
 
+// Get single interviewer by id
+router.get("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid interviewer id" });
+    }
+
+    const interviewer = await Interviewer.findById(id)
+      .populate("technologies", "name")
+      .exec();
+
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer not found" });
+    }
+
+    return res.json({ interviewer });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 // Update interviewer
 router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
   try {
