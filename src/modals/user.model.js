@@ -9,16 +9,13 @@ const userSchema = new mongoose.Schema(
     // Firebase UID as stable identifier (maps to DBDESIGN uid objectid concept)
     firebase_uid: { type: String, required: true, unique: true },
 
-    // Legacy field name used in some older DBs / indexes
-    firebaseUid: { type: String, unique: true, sparse: true },
-
     company_id: { type: mongoose.Schema.Types.ObjectId, ref: "company", default: null },
     team_id: { type: mongoose.Schema.Types.ObjectId, ref: "teams", default: null },
 
     role: { type: Number, required: true }, // 0..3 based on doc
     is_active: { type: Boolean, default: true },
 
-    created_by: { type: String, default: null },
+    created_by: { type: mongoose.Schema.Types.ObjectId, ref: "users", default: null },
   },
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );

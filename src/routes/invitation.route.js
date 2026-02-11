@@ -244,7 +244,7 @@ router.post("/accept", requireAuth, async (req, res, next) => {
       company_id: invitation.company_id,
       team_id: invitation.team_id || null,
       role: invitation.role,
-      created_by: invitation.invited_by?.toString?.() || null,
+      created_by: invitation.invited_by || null,
     };
 
     const created = await User.create(userPayload);

@@ -8,6 +8,10 @@ import invitationRoute from "./routes/invitation.route.js";
 import interviewerRoute from "./routes/interviewer.route.js";
 import interviewerAvailabilityRoute from "./routes/interviewerAvailability.route.js";
 import technologyRoute from "./routes/technology.route.js";
+import dashboardRoute from "./routes/dashboard.route.js";
+import clientRoute from "./routes/client.route.js";
+import userRoute from "./routes/user.route.js";
+import vendorRoute from "./routes/vendor.route.js";
 
 import healthRoute from "./routes/health.route.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
@@ -28,6 +32,10 @@ app.use("/invitations", invitationRoute);
 app.use("/interviewers", interviewerRoute);
 app.use("/interviewers", interviewerAvailabilityRoute);
 app.use("/technologies", technologyRoute);
+app.use("/dashboard", dashboardRoute);
+app.use("/clients", clientRoute);
+app.use("/users", userRoute);
+app.use("/vendors", vendorRoute);
 
 
 /* 404 */

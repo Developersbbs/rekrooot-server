@@ -36,7 +36,7 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 
     const payload = {
       name: name.trim(),
-      created_by: req.auth.uid,
+      created_by: req.user._id,
     };
 
     if (typeof subscription_status === "boolean") {
@@ -69,7 +69,7 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 
 router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
   try {
-    const companies = await Company.find({}).sort({ created_at: -1 });
+    const companies = await Company.find({ subscription_status: true }).sort({ created_at: -1 });
     return res.json({ companies });
   } catch (err) {
     return next(err);

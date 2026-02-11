@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import Interviewer from "../modals/interviewer.model.js";
+import { Interview } from "../modals/interview.model.js";
 
 const router = Router();
 
@@ -93,7 +94,13 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 // List interviewers (SuperAdmin managed global resource)
 router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
   try {
-    const interviewers = await Interviewer.find({}).sort({ created_at: -1 });
+    const { company_id } = req.query;
+    let query = {};
+    if (company_id && company_id !== "all" && mongoose.Types.ObjectId.isValid(company_id)) {
+      query.company_id = company_id;
+    }
+
+    const interviewers = await Interviewer.find(query).sort({ created_at: -1 });
     return res.json({ interviewers });
   } catch (err) {
     return next(err);
@@ -240,6 +247,20 @@ router.delete("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => 
     return res.status(200).json({ message: "Interviewer deleted" });
   } catch (err) {
     return next(err);
+  }
+});
+
+// List interviews for an interviewer
+router.get("/:id/interviews", requireAuth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid interviewer id" });
+    }
+    const interviews = await Interview.find({ interviewer_id: id }).sort({ date_time: 1 });
+    return res.json({ interviews });
+  } catch (err) {
+    next(err);
   }
 });
 

@@ -5,9 +5,9 @@ import { User } from "../src/modals/user.model.js";
 async function run() {
   await connectDB();
 
-  const email = "developer@sbbs.co.in";
-  const password = "developer@sbbs";
-  const username = "SBBS SuperAdmin";
+  const email = "admin@rekrooot.com";
+  const password = "rekrooot@2025";
+  const username = "Rekrooot Admin";
 
   if (!email || !password) {
     throw new Error("Missing SEED_SUPERADMIN_EMAIL or SEED_SUPERADMIN_PASSWORD");
