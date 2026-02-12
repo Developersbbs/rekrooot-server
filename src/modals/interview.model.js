@@ -7,11 +7,11 @@ const interviewSchema = new mongoose.Schema(
         candidate_email: { type: String, required: true },
         candidate_phone: { type: String },
         date_time: { type: Date, required: true },
-        status: { type: String, default: "scheduled" }, // scheduled, completed, cancelled
-        company_id: { type: mongoose.Schema.Types.ObjectId, ref: "company" },
-        created_by: { type: mongoose.Schema.Types.ObjectId, ref: "users" },
+        status: { type: String, default: "scheduled" },
+        company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company" },
+        created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     },
     { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );
 
-export const Interview = mongoose.model("interviews", interviewSchema);
+export const Interview = mongoose.model("Interview", interviewSchema);

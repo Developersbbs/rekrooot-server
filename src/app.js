@@ -12,6 +12,8 @@ import dashboardRoute from "./routes/dashboard.route.js";
 import clientRoute from "./routes/client.route.js";
 import userRoute from "./routes/user.route.js";
 import vendorRoute from "./routes/vendor.route.js";
+import jobRoute from "./routes/job.route.js";
+import candidateRoute from "./routes/candidate.route.js";
 
 import healthRoute from "./routes/health.route.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
@@ -36,6 +38,8 @@ app.use("/dashboard", dashboardRoute);
 app.use("/clients", clientRoute);
 app.use("/users", userRoute);
 app.use("/vendors", vendorRoute);
+app.use("/jobs", jobRoute);
+app.use("/candidates", candidateRoute);
 
 
 /* 404 */

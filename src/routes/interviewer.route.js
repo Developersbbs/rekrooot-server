@@ -264,4 +264,22 @@ router.get("/:id/interviews", requireAuth, requireSuperAdmin, async (req, res, n
   }
 });
 
+router.get("/all-interviews", requireAuth, async (req, res, next) => {
+  try {
+    const { company_id } = req.query;
+    let query = {};
+    if (company_id && company_id !== "all" && mongoose.Types.ObjectId.isValid(company_id)) {
+      query.company_id = company_id;
+    }
+
+    const interviews = await Interview.find(query)
+      .populate("interviewer_id", "name email")
+      .sort({ date_time: -1 });
+
+    return res.json({ interviews });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

@@ -30,11 +30,9 @@ async function requireSuperAdmin(req, res, next) {
   }
 }
 
-// GET /interviewers/:id/availability
 router.get(
   "/:id/availability",
   requireAuth,
-  requireSuperAdmin,
   async (req, res, next) => {
     try {
       const { id } = req.params;
@@ -78,8 +76,6 @@ router.get(
   }
 );
 
-// PUT /interviewers/:id/availability
-// Replaces availability within the range covered by the provided intervals
 router.put(
   "/:id/availability",
   requireAuth,
@@ -97,7 +93,6 @@ router.put(
         return res.status(400).json({ message: "'intervals' array is required" });
       }
 
-      // Parse and validate intervals
       const parsed = intervals.map((interval, index) => {
         const { start_time, end_time } = interval ?? {};
 
@@ -127,7 +122,6 @@ router.put(
         return { start, end };
       });
 
-      // Compute overall range to simplify cleanup
       const minStart = parsed.reduce(
         (min, p) => (p.start < min ? p.start : min),
         parsed[0].start
@@ -137,7 +131,6 @@ router.put(
         parsed[0].end
       );
 
-      // Replace existing availability for this interviewer in the covered range
       await InterviewerAvailability.deleteMany({
         interviewer: id,
         start_time: { $lt: maxEnd },

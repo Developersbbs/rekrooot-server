@@ -20,7 +20,6 @@ const interviewerSchema = new Schema(
       trim: true,
     },
     logo: {
-      // profile picture URL
       type: String,
       trim: true,
     },
@@ -35,7 +34,7 @@ const interviewerSchema = new Schema(
     technologies: [
       {
         type: Schema.Types.ObjectId,
-        ref: "technologies",
+        ref: "Technology",
       },
     ],
     company_id: {

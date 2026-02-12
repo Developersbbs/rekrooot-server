@@ -7,12 +7,11 @@ const clientSchema = new mongoose.Schema(
         contact: { type: String, trim: true },
         logo: { type: String, trim: true },
 
-        // The agency (Company) this client belongs to
-        company_id: { type: mongoose.Schema.Types.ObjectId, ref: "company", required: true },
+        company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true },
 
-        created_by: { type: mongoose.Schema.Types.ObjectId, ref: "users", required: true },
+        created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     },
     { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );
 
-export const Client = mongoose.model("client", clientSchema);
+export const Client = mongoose.model("Client", clientSchema);

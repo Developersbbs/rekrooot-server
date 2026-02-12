@@ -9,4 +9,4 @@ const technologySchema = new mongoose.Schema(
 
 technologySchema.index({ name: 1 }, { unique: true });
 
-export const Technology = mongoose.model("technologies", technologySchema);
+export const Technology = mongoose.model("Technology", technologySchema);

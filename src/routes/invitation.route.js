@@ -1,9 +1,10 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
 import { Router } from "express";
-import { requireAuth } from "../middlewares/auth.middleware.js";
+import { requireAuth, attachUser } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import { Invitation } from "../modals/invitation.model.js";
+import { Team } from "../modals/team.model.js";
 import { Company } from "../modals/company.model.js";
 import { ENV } from "../config/env.js";
 import { sendInvitationEmail } from "../services/mailer.js";
@@ -78,9 +79,14 @@ router.get("/validate", async (req, res, next) => {
   }
 });
 
-router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
+router.post("/", requireAuth, attachUser, async (req, res, next) => {
   try {
-    const { email, company_id, team_id, role } = req.body || {};
+    // Authorization: SuperAdmin (role 0), Recruiter Admin (role 1) or Lead Recruiter (role 2)
+    if (req.user.role !== 0 && req.user.role !== 1 && req.user.role !== 2) {
+      return res.status(403).json({ message: "You are not allowed to invite users" });
+    }
+
+    const { email, company_id, team_id, lead_recruiter_id, region, role } = req.body || {};
 
     if (!email || typeof email !== "string" || !email.trim()) {
       return res.status(400).json({ message: "Email is required" });
@@ -90,12 +96,14 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
       return res.status(400).json({ message: "Invalid company_id" });
     }
 
-    let teamId = null;
-    if (team_id !== undefined && team_id !== null && team_id !== "") {
-      if (!mongoose.Types.ObjectId.isValid(team_id)) {
-        return res.status(400).json({ message: "Invalid team_id" });
+    // Recruiter Admin (1) and Lead Recruiter (2) can only invite to their own company
+    if (req.user.role === 1 || req.user.role === 2) {
+      if (!req.user.company_id) {
+        return res.status(400).json({ message: "User is not associated with any company" });
       }
-      teamId = team_id;
+      if (company_id !== req.user.company_id.toString()) {
+        return res.status(403).json({ message: "You can only invite users to your own company" });
+      }
     }
 
     let roleId;
@@ -107,6 +115,31 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 
     if (![1, 2, 3].includes(roleId)) {
       return res.status(400).json({ message: "Invalid role" });
+    }
+
+    // Default lead_recruiter_id if inviter is a Lead Recruiter
+    let finalLeadRecruiterId = lead_recruiter_id;
+    if (req.user.role === 2 && roleId === 3) {
+      finalLeadRecruiterId = req.user._id;
+    }
+
+    let teamId = null;
+    if (team_id !== undefined && team_id !== null && team_id !== "") {
+      if (!mongoose.Types.ObjectId.isValid(team_id)) {
+        return res.status(400).json({ message: "Invalid team_id" });
+      }
+      teamId = team_id;
+    } else if (finalLeadRecruiterId && mongoose.Types.ObjectId.isValid(finalLeadRecruiterId)) {
+      // Auto-lookup team based on lead_recruiter_id
+      const team = await Team.findOne({ team_lead: finalLeadRecruiterId });
+      if (team) {
+        teamId = team._id;
+      }
+    }
+
+    // Recruiter Admin cannot invite other Recruiter Admins
+    if (req.user.role === 1 && roleId === 1) {
+      return res.status(403).json({ message: "Recruiter Admin cannot invite other Recruiter Admins" });
     }
 
     const emailNormalized = email.trim().toLowerCase();
@@ -132,15 +165,23 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
     const token = generateToken();
     const expires_at = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
-    const invitation = await Invitation.create({
+    const invitationData = {
       email: emailNormalized,
       token,
       company_id,
-      team_id: teamId,
       role: roleId,
       invited_by: req.user._id,
       expires_at,
-    });
+    };
+
+    // Only store recruiter-specific fields for Lead Recruiter (2) or Recruiter (3)
+    if (roleId === 2 || roleId === 3) {
+      invitationData.team_id = teamId;
+      invitationData.lead_recruiter_id = finalLeadRecruiterId || null;
+      invitationData.region = region || null;
+    }
+
+    const invitation = await Invitation.create(invitationData);
 
     const inviteUrl = `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/createaccount?token=${token}`;
 
@@ -240,14 +281,56 @@ router.post("/accept", requireAuth, async (req, res, next) => {
       email: invitedEmail,
       contact: typeof contact === "string" ? contact.trim() : undefined,
       firebase_uid: req.auth.uid,
-      firebaseUid: req.auth.uid,
       company_id: invitation.company_id,
-      team_id: invitation.team_id || null,
       role: invitation.role,
       created_by: invitation.invited_by || null,
     };
 
+    // Only set recruiter-specific fields for roles 2 (Lead Recruiter) or 3 (Recruiter)
+    if (invitation.role === 2 || invitation.role === 3) {
+      if (invitation.team_id) userPayload.team_id = invitation.team_id;
+      if (invitation.lead_recruiter_id) userPayload.lead_recruiter_id = invitation.lead_recruiter_id;
+      if (invitation.region) userPayload.recruiter_region = invitation.region;
+    }
+
     const created = await User.create(userPayload);
+
+    // Team Logic
+    if (created.role === 2) { // Lead Recruiter
+      // Create a team for this lead recruiter
+      const newTeam = await Team.create({
+        name: `${created.username}'s Team`,
+        company_id: created.company_id,
+        team_lead: created._id,
+        region: invitation.region || null,
+        members: []
+      });
+
+      // Update user with the team_id
+      created.team_id = newTeam._id;
+      await created.save();
+    } else if (created.role === 3) { // Recruiter
+      const leadId = created.lead_recruiter_id || invitation.invited_by;
+      if (leadId) {
+        // Find the team of the lead recruiter
+        const team = await Team.findOne({ team_lead: leadId });
+        if (team) {
+          created.team_id = team._id;
+          if (!created.lead_recruiter_id) {
+            created.lead_recruiter_id = leadId;
+          }
+          await created.save();
+
+          // Add to team members if not already there
+          const isMember = team.members.some(m => m.toString() === created._id.toString());
+          if (!isMember) {
+            team.members.push(created._id);
+            await team.save();
+          }
+        }
+      }
+    }
+
     await Invitation.deleteOne({ _id: invitation._id });
 
     return res.status(201).json({ user: created });
