@@ -13,7 +13,6 @@ export function getAdminApp() {
   const credentials = {
     projectId: ENV.FIREBASE_PROJECT_ID,
     clientEmail: ENV.FIREBASE_CLIENT_EMAIL,
-    // Replace escaped newlines if the key is stored in .env as a single line
     privateKey: ENV.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
   };
 

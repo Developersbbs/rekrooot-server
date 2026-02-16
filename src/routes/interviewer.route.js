@@ -4,6 +4,7 @@ import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import Interviewer from "../modals/interviewer.model.js";
 import { Interview } from "../modals/interview.model.js";
+import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
 
 const router = Router();
 
@@ -36,7 +37,6 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
       contact,
       logo,
       zoho_meet_uid,
-      skills,
       technologies,
     } = req.body || {};
 
@@ -66,10 +66,6 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
       payload.zoho_meet_uid = zoho_meet_uid.trim();
     }
 
-    if (Array.isArray(skills)) {
-      payload.skills = skills.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim());
-    }
-
     if (Array.isArray(technologies)) {
       const validTechIds = technologies.filter((id) => mongoose.Types.ObjectId.isValid(id));
       if (validTechIds.length) {
@@ -94,14 +90,76 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 // List interviewers (SuperAdmin managed global resource)
 router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
   try {
-    const { company_id } = req.query;
     let query = {};
-    if (company_id && company_id !== "all" && mongoose.Types.ObjectId.isValid(company_id)) {
-      query.company_id = company_id;
+
+    const interviewers = await Interviewer.find(query).populate("technologies", "name").sort({ created_at: -1 });
+    return res.json({ interviewers });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// List all interviewers (public basic info with availability)
+router.get("/public/list", async (req, res, next) => {
+  try {
+    const interviewers = await Interviewer.find().select("name email zoho_meet_uid technologies").populate("technologies", "name").lean();
+
+    // Fetch availabilities
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    const availabilities = await InterviewerAvailability.find({
+      start_time: { $gte: now }
+    }).lean();
+
+    // Map availabilities
+    const slotsMap = {};
+    availabilities.forEach(slot => {
+      const intId = slot.interviewer.toString();
+      if (!slotsMap[intId]) slotsMap[intId] = {};
+
+      const date = new Date(slot.start_time);
+      const dateStr = date.toDateString();
+
+      const hours = date.getHours().toString().padStart(2, '0');
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      const timeStr = `${hours}:${minutes}`;
+
+      if (!slotsMap[intId][dateStr]) {
+        slotsMap[intId][dateStr] = {};
+      }
+
+      // If status is 2 (booked), store the candidate_id string, else store 'available'
+      slotsMap[intId][dateStr][timeStr] = slot.status === 2 ? (slot.candidate_id?.toString() || 'booked') : 'available';
+    });
+
+    // Add slots to interviewers
+    interviewers.forEach(int => {
+      int.availability_slots = slotsMap[int._id.toString()] || {};
+    });
+
+    return res.json({ interviewers });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// Get single interviewer (public basic info)
+router.get("/:id/public", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid interviewer id" });
     }
 
-    const interviewers = await Interviewer.find(query).sort({ created_at: -1 });
-    return res.json({ interviewers });
+    const interviewer = await Interviewer.findById(id).select("name email zoho_meet_uid technologies");
+
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer not found" });
+    }
+
+    return res.json({ interviewer });
   } catch (err) {
     return next(err);
   }
@@ -145,7 +203,6 @@ router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
       contact,
       logo,
       zoho_meet_uid,
-      skills,
       technologies,
     } = req.body || {};
 
@@ -189,16 +246,6 @@ router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
       }
     }
 
-    if (skills !== undefined) {
-      if (Array.isArray(skills)) {
-        update.skills = skills
-          .filter((s) => typeof s === "string" && s.trim())
-          .map((s) => s.trim());
-      } else {
-        update.skills = [];
-      }
-    }
-
     if (technologies !== undefined) {
       if (Array.isArray(technologies)) {
         const validTechIds = technologies.filter((tid) => mongoose.Types.ObjectId.isValid(tid));
@@ -206,6 +253,14 @@ router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
       } else {
         update.technologies = [];
       }
+    }
+
+    if (req.body.availability_slots !== undefined) {
+      update.availability_slots = req.body.availability_slots;
+    }
+
+    if (req.body.assigned_candidates !== undefined) {
+      update.assigned_candidates = req.body.assigned_candidates;
     }
 
     const interviewer = await Interviewer.findByIdAndUpdate(id, update, {
@@ -277,6 +332,72 @@ router.get("/all-interviews", requireAuth, async (req, res, next) => {
       .sort({ date_time: -1 });
 
     return res.json({ interviews });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /:id/timeslots - Fetch and process availability intervals into slots
+router.get("/:id/timeslots", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { days = 31 } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid interviewer id" });
+    }
+
+    const today = new Date();
+    const from = new Date(today.setHours(0, 0, 0, 0)).toISOString();
+    const toDate = new Date();
+    toDate.setDate(toDate.getDate() + parseInt(days));
+    const to = toDate.toISOString();
+
+    const availability = await InterviewerAvailability.find({
+      interviewer: id,
+      start_time: { $lt: to },
+      end_time: { $gt: from },
+      status: 1 // Only available slots
+    }).sort({ start_time: 1 });
+
+    const timeSlots = [];
+    const nowLocal = new Date();
+
+    for (const range of availability) {
+      let current = new Date(range.start_time);
+      const end = new Date(range.end_time);
+
+      while (new Date(current.getTime() + 3600000) <= end) {
+        if (current > nowLocal) {
+          const slotDate = current.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+          const slotTime12 = current.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+          // Format 24h manually for HH:mm
+          const hh = current.getHours().toString().padStart(2, '0');
+          const mm = current.getMinutes().toString().padStart(2, '0');
+          const slotTime24 = `${hh}:${mm}`;
+
+          timeSlots.push({
+            date: slotDate,
+            time: slotTime12,
+            time24: slotTime24,
+            duration: '1 hour',
+            iso: current.toISOString()
+          });
+        }
+        current = new Date(current.getTime() + 3600000);
+      }
+    }
+
+    // Sort and filter unique
+    timeSlots.sort((a, b) => new Date(a.iso) - new Date(b.iso));
+    const uniqueSlots = timeSlots.filter((slot, index, self) =>
+      index === self.findIndex((t) => (
+        t.date === slot.date && t.time24 === slot.time24
+      ))
+    );
+
+    return res.json({ success: true, timeSlots: uniqueSlots });
   } catch (err) {
     next(err);
   }

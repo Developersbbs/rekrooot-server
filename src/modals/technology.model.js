@@ -2,7 +2,12 @@ import mongoose from "mongoose";
 
 const technologySchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true
+    },
   },
   { timestamps: { createdAt: "created_at", updatedAt: false } },
 );

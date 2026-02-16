@@ -61,7 +61,8 @@ const jobSchema = new mongoose.Schema({
         no_show: { type: Number, default: 0 },
         cancelled: { type: Number, default: 0 },
         technical_issue: { type: Number, default: 0 },
-        proxy: { type: Number, default: 0 }
+        proxy: { type: Number, default: 0 },
+        on_hold: { type: Number, default: 0 }
     }
 }, {
     timestamps: true

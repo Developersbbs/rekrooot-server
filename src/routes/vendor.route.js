@@ -5,6 +5,24 @@ import { requireAuth } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
+// GET /vendors/:id/public (public endpoint)
+router.get("/:id/public", async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid ID" });
+        }
+
+        const vendor = await Vendor.findById(id).select("email name");
+        if (!vendor) {
+            return res.status(404).json({ error: "Vendor not found" });
+        }
+        return res.json({ vendor });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // GET /vendors - list vendors (support company_id filter)
 router.get("/", requireAuth, async (req, res, next) => {
     try {
@@ -28,6 +46,37 @@ router.get("/", requireAuth, async (req, res, next) => {
         }));
 
         res.json({ vendors: formattedVendors });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /vendors/:id - single vendor
+router.get("/:id", requireAuth, async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid vendor ID" });
+        }
+
+        const vendor = await Vendor.findById(id);
+
+        if (!vendor) {
+            return res.status(404).json({ error: "Vendor not found" });
+        }
+
+        res.json({
+            vendor: {
+                id: vendor._id,
+                vendorName: vendor.name,
+                email: vendor.email,
+                contactNumber: vendor.contact,
+                status: vendor.status,
+                company_id: vendor.company_id,
+                createdAt: vendor.created_at
+            }
+        });
     } catch (err) {
         next(err);
     }

@@ -48,6 +48,30 @@ router.get("/", requireAuth, attachUser, async (req, res, next) => {
     }
 });
 
+// GET single client
+router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: "Invalid client ID" });
+        }
+
+        const query = { _id: id };
+
+        if (req.user.role !== 0) {
+            query.company_id = req.user.company_id;
+        }
+
+        const client = await Client.findOne(query);
+        if (!client) return res.status(404).json({ message: "Client not found" });
+
+        return res.json({ client });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // POST create client
 router.post("/", requireAuth, attachUser, async (req, res, next) => {
     try {

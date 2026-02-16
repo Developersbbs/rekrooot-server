@@ -14,8 +14,9 @@ import userRoute from "./routes/user.route.js";
 import vendorRoute from "./routes/vendor.route.js";
 import jobRoute from "./routes/job.route.js";
 import candidateRoute from "./routes/candidate.route.js";
+import meetingRoute from "./routes/meeting.route.js";
+import emailRoute from "./routes/email.route.js";
 
-import healthRoute from "./routes/health.route.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
 
 const app = express();
@@ -27,7 +28,6 @@ app.use(express.json());
 app.use(morgan("dev"));
 
 /* routes */
-app.use("/health", healthRoute);
 app.use("/auth", authRoute);
 app.use("/companies", companyRoute);
 app.use("/invitations", invitationRoute);
@@ -40,6 +40,8 @@ app.use("/users", userRoute);
 app.use("/vendors", vendorRoute);
 app.use("/jobs", jobRoute);
 app.use("/candidates", candidateRoute);
+app.use("/meetings", meetingRoute);
+app.use("/emails", emailRoute);
 
 
 /* 404 */

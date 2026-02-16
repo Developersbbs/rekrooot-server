@@ -3,8 +3,8 @@ import { ENV } from "../config/env.js";
 
 function hasSmtpConfig() {
   return Boolean(
-    ENV.NEWUSER_SMTP_HOST &&
-      ENV.NEWUSER_SMTP_PORT &&
+    ENV.SMTP_HOST &&
+      ENV.SMTP_PORT &&
       ENV.NEWUSER_MAIL_FROM &&
       (ENV.NEWUSER_SMTP_USER ? ENV.NEWUSER_SMTP_PASS : true),
   );
@@ -13,8 +13,8 @@ function hasSmtpConfig() {
 function getMissingSmtpKeys() {
   const missing = [];
 
-  if (!ENV.NEWUSER_SMTP_HOST) missing.push("NEWUSER_SMTP_HOST");
-  if (!ENV.NEWUSER_SMTP_PORT || Number.isNaN(ENV.NEWUSER_SMTP_PORT)) missing.push("NEWUSER_SMTP_PORT");
+  if (!ENV.SMTP_HOST) missing.push("NEWUSER_SMTP_HOST");
+  if (!ENV.SMTP_PORT || Number.isNaN(ENV.NEWUSER_SMTP_PORT)) missing.push("NEWUSER_SMTP_PORT");
   if (ENV.NEWUSER_SMTP_USER && !ENV.NEWUSER_SMTP_PASS) missing.push("NEWUSER_SMTP_PASS");
   if (!ENV.NEWUSER_MAIL_FROM) missing.push("NEWUSER_MAIL_FROM");
 
@@ -28,9 +28,9 @@ function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
 
   cachedTransporter = nodemailer.createTransport({
-    host: ENV.NEWUSER_SMTP_HOST,
-    port: ENV.NEWUSER_SMTP_PORT,
-    secure: ENV.NEWUSER_SMTP_SECURE,
+    host: ENV.SMTP_HOST,
+    port: ENV.SMTP_PORT,
+    secure: ENV.SMTP_SECURE,
     auth: ENV.NEWUSER_SMTP_USER
       ? {
           user: ENV.NEWUSER_SMTP_USER,

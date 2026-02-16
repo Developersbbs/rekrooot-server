@@ -77,8 +77,8 @@ router.get("/stats", requireAuth, attachUser, async (req, res, next) => {
 
         const monthlyTrends = months.slice(0, currentMonth + 1).map((month, idx) => ({
             month,
-            interviews: idx === currentMonth ? (statusCounts.scheduled || 0) + (statusCounts.completed || 0) : 0,
-            hired: (statusCounts.completed || 0)
+            interviews: idx === currentMonth ? (statusCounts[1] || statusCounts.scheduled || 0) + (statusCounts[2] || statusCounts.rescheduled || 0) : 0,
+            hired: (statusCounts.completed || 0) // Keeping completed for now if it exists in older data
         }));
 
         return res.json({

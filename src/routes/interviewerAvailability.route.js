@@ -30,6 +30,52 @@ async function requireSuperAdmin(req, res, next) {
   }
 }
 
+// Public availability endpoint (No auth)
+router.get(
+  "/:id/availability/public",
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const { from, to } = req.query ?? {};
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid interviewer id" });
+      }
+
+      if (!from || !to) {
+        return res
+          .status(400)
+          .json({ message: "Query parameters 'from' and 'to' are required" });
+      }
+
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+
+      if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+        return res
+          .status(400)
+          .json({ message: "Invalid 'from' or 'to' datetime format" });
+      }
+
+      if (fromDate >= toDate) {
+        return res
+          .status(400)
+          .json({ message: "'from' must be before 'to'" });
+      }
+
+      const availability = await InterviewerAvailability.find({
+        interviewer: id,
+        start_time: { $lt: toDate },
+        end_time: { $gt: fromDate },
+      }).populate("candidate_id", "full_name").sort({ start_time: 1 });
+
+      return res.json({ availability });
+    } catch (err) {
+      return next(err);
+    }
+  }
+);
+
 router.get(
   "/:id/availability",
   requireAuth,
@@ -67,7 +113,7 @@ router.get(
         interviewer: id,
         start_time: { $lt: toDate },
         end_time: { $gt: fromDate },
-      }).sort({ start_time: 1 });
+      }).populate("candidate_id", "full_name").sort({ start_time: 1 });
 
       return res.json({ availability });
     } catch (err) {
@@ -135,6 +181,7 @@ router.put(
         interviewer: id,
         start_time: { $lt: maxEnd },
         end_time: { $gt: minStart },
+        status: 1, // Only delete available slots
       });
 
       const docs = parsed.map(({ start, end }) => ({

@@ -84,7 +84,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
         if (validSkills.length > 0) {
             for (const skillName of validSkills) {
                 if (typeof skillName === 'string' && skillName.trim()) {
-                    const normalizedName = skillName.trim();
+                    const normalizedName = skillName.trim().toLowerCase();
                     // Upsert technology
                     const tech = await Technology.findOneAndUpdate(
                         { name: normalizedName },
@@ -110,7 +110,11 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             created_by: req.user._id
         });
 
-        return res.status(201).json({ job });
+        const populatedJob = await Job.findById(job._id)
+            .populate('client_id', 'name')
+            .populate('technologies', 'name');
+
+        return res.status(201).json({ job: populatedJob });
     } catch (err) {
         next(err);
     }
@@ -127,7 +131,27 @@ router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
             query.company_id = req.user.company_id;
         }
 
-        const job = await Job.findOneAndUpdate(query, updates, { new: true });
+        if (updates.required_skills && Array.isArray(updates.required_skills)) {
+            const technologyIds = [];
+            for (const skillName of updates.required_skills) {
+                if (typeof skillName === 'string' && skillName.trim()) {
+                    const normalizedName = skillName.trim().toLowerCase();
+                    const tech = await Technology.findOneAndUpdate(
+                        { name: normalizedName },
+                        { $setOnInsert: { name: normalizedName } },
+                        { upsert: true, new: true, setDefaultsOnInsert: true }
+                    );
+                    technologyIds.push(tech._id);
+                }
+            }
+            updates.technologies = technologyIds;
+            delete updates.required_skills;
+        }
+
+        const job = await Job.findOneAndUpdate(query, updates, { new: true })
+            .populate('client_id', 'name')
+            .populate('technologies', 'name');
+
         if (!job) return res.status(404).json({ message: "Job not found or unauthorized" });
 
         return res.json({ job });

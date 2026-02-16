@@ -27,10 +27,6 @@ const interviewerSchema = new Schema(
       type: String,
       trim: true,
     },
-    skills: {
-      type: [String],
-      default: [],
-    },
     technologies: [
       {
         type: Schema.Types.ObjectId,

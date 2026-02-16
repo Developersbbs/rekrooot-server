@@ -59,7 +59,17 @@ const candidateSchema = new mongoose.Schema({
     trash: {
         type: Boolean,
         default: false
-    }
+    },
+    interviewer_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Interviewer'
+    },
+    interview_date: String,
+    interview_time: String,
+    meeting_link: String,
+    session_id: String,
+    presenterId: String,
+    zsoid: String
 }, {
     timestamps: true
 });

@@ -22,6 +22,14 @@ const interviewerAvailabilitySchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User",
     },
+    status: {
+      type: Number,
+      default: 1, // 1: available, 2: booked
+    },
+    candidate_id: {
+      type: Schema.Types.ObjectId,
+      ref: "Candidate",
+    },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

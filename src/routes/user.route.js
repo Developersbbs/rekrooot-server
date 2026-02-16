@@ -2,6 +2,7 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
+import { getAdminAuth } from "../config/firebaseAdmin.js";
 
 const router = Router();
 
@@ -18,6 +19,29 @@ async function attachUser(req, res, next) {
         next(err);
     }
 }
+
+// GET /users/:id/public - Fetch basic user info (email) for scheduling
+router.get("/:id/public", async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        let query = {};
+        if (mongoose.Types.ObjectId.isValid(id)) {
+            query = { _id: id };
+        } else {
+            return res.status(400).json({ message: "Invalid ID" });
+        }
+
+        const user = await User.findOne(query).select("email username");
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        return res.json({ user });
+    } catch (err) {
+        next(err);
+    }
+});
 
 router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
@@ -143,15 +167,16 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
             query = { firebase_uid: id };
         }
 
-        const userToDelete = await User.findOne(query);
-        if (!userToDelete) {
-            return res.status(404).json({ message: "User not found" });
+        // Delete from Firebase Auth
+        if (userToDelete.firebase_uid) {
+            try {
+                await getAdminAuth().deleteUser(userToDelete.firebase_uid);
+            } catch (firebaseErr) {
+                console.warn("User deleted from DB but failed to delete from Firebase Auth:", firebaseErr.message);
+            }
         }
 
         await User.deleteOne(query);
-
-        // Note: You might also want to delete from Firebase Auth here or trigger it.
-        // For now, we assume the client handles the Firebase Auth deletion call or this is sufficient for the DB.
 
         return res.json({ message: "User deleted successfully" });
     } catch (err) {
