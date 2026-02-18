@@ -6,6 +6,7 @@ import Interviewer from "../modals/interviewer.model.js";
 import { Interview } from "../modals/interview.model.js";
 import { Candidate } from "../modals/candidate.model.js";
 import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
+import { Job } from "../modals/job.model.js";
 
 const router = Router();
 
@@ -24,6 +25,13 @@ router.post("/create", async (req, res, next) => {
             interviewerId,
             candidateId
         } = req.body;
+
+        if (startTime) {
+            const parsedDate = new Date(startTime);
+            if (isNaN(parsedDate.getTime())) {
+                return res.status(400).json({ error: 'Invalid startTime format' });
+            }
+        }
 
         // 1. Get Access Token
         let accessToken = authToken;
@@ -68,7 +76,6 @@ router.post("/create", async (req, res, next) => {
 
         const url = `https://meeting.zoho.in/api/v2/${contextId}/sessions.json`;
 
-        // Check for missing fields
         const missingFields = [];
         if (!accessToken) missingFields.push('authToken');
         if (!topic) missingFields.push('topic');
@@ -101,45 +108,37 @@ router.post("/create", async (req, res, next) => {
         const meetData = response.data;
         console.log('Meeting creation response:', meetData);
 
-        // 4. Save to DB Collections
         if (meetData && meetData.session) {
             const session = meetData.session;
             const meetingLink = session.joinLink || session.join_url || session.meetingLink || session.url;
             const sessionId = session.meetingKey || session.meeting_key || session.id;
             const zsoid = session.zsoid || (session.meeting && session.meeting.zsoid);
 
-            // Create Interview Record
             const interviewData = {
                 interviewer_id: interviewerId,
                 candidate_id: candidateId,
                 candidate_name: candidate?.full_name || "N/A",
                 candidate_email: candidate?.email || "N/A",
                 date_time: new Date(startTime),
+                interviewer_name: interviewer?.name || "N/A",
                 meeting_link: meetingLink,
                 session_id: sessionId,
                 presenter_id: contextId,
                 zsoid: zsoid,
                 company_id: candidate?.company_id,
+                job_id: candidate?.job_id,
                 created_by: candidate?.created_by,
-                status: 1
+                status: 0
             };
 
             const newInterview = await Interview.create(interviewData);
-
-            // Update Candidate Record
             if (candidate) {
                 await Candidate.findByIdAndUpdate(candidateId, {
-                    interviewer_id: interviewerId,
-                    interview_date: startTime.split(' ')[0], // Simple date extraction
-                    interview_time: startTime.split(' ').slice(1).join(' '),
-                    meeting_link: meetingLink,
-                    session_id: sessionId,
-                    presenterId: contextId,
-                    zsoid: zsoid
+                    interview_id: newInterview._id,
+                    status: 1 // scheduled
                 });
             }
 
-            // Update InterviewerAvailability Record
             if (interviewer && startTime) {
                 const startDate = new Date(startTime);
 
@@ -164,6 +163,20 @@ router.post("/create", async (req, res, next) => {
                 }
             }
 
+            // Update Job candidate counts (Scheduled + 1, Waiting - 1)
+            if (candidate?.job_id) {
+                try {
+                    await Job.findByIdAndUpdate(candidate.job_id, {
+                        $inc: {
+                            "candidate_counts.scheduled": 1,
+                            "candidate_counts.waiting": -1
+                        }
+                    });
+                } catch (jobErr) {
+                    console.error("Failed to update Job candidate counts:", jobErr.message);
+                }
+            }
+
             return res.status(200).json({
                 ...meetData,
                 interviewId: newInterview._id
@@ -172,7 +185,13 @@ router.post("/create", async (req, res, next) => {
 
         res.status(200).json(meetData);
     } catch (error) {
-        console.error('Error in meeting creation flow:', error.message);
+        console.error('Zoho Creation error details:', {
+            status: error.response?.status,
+            data: error.response?.data,
+            message: error.message,
+            url: error.config?.url,
+            payload: error.config?.data
+        });
         if (error.response) {
             return res.status(error.response.status).json(error.response.data);
         }
@@ -180,7 +199,6 @@ router.post("/create", async (req, res, next) => {
     }
 });
 
-// POST /cancel - Cancel a Zoho meeting
 router.post("/cancel", async (req, res, next) => {
     try {
         const { authToken, sessionId, presenterId } = req.body;
@@ -202,25 +220,90 @@ router.post("/cancel", async (req, res, next) => {
             return res.status(400).json({ message: "Missing sessionId or presenterId" });
         }
 
-        const url = `https://meeting.zoho.in/api/v2/${presenterId}/sessions/${sessionId}.json`;
+        const interview = await Interview.findOne({ session_id: sessionId });
+        const finalZsoid = req.body.zsoid || interview?.zsoid || presenterId;
 
-        const response = await axios.delete(url, {
-            headers: {
-                'Authorization': `Zoho-oauthtoken ${accessToken}`
+        const url = `https://meeting.zoho.in/api/v2/${finalZsoid}/sessions/${sessionId}.json`;
+
+        try {
+            const response = await axios.delete(url, {
+                headers: {
+                    'Authorization': `Zoho-oauthtoken ${accessToken}`
+                }
+            });
+
+            if (response.status === 204 || response.status === 200) {
+                if (interview) {
+                    await Interview.findByIdAndUpdate(interview._id, { status: 6 });
+                    await InterviewerAvailability.findOneAndUpdate(
+                        { interviewer: interview.interviewer_id, start_time: interview.date_time },
+                        { status: 1, $unset: { candidate_id: "" } }
+                    );
+                    if (interview.candidate_id) {
+                        await Candidate.findByIdAndUpdate(interview.candidate_id, {
+                            final_status: null,
+                            is_active: true,
+                            status: 5, // 5: cancelled
+                            $unset: { interview_id: "" }
+                        });
+                    }
+                    if (interview.job_id) {
+                        const fieldToDecrement = interview.status === 2 ? "candidate_counts.interview_in_review" : "candidate_counts.scheduled";
+                        await Job.findByIdAndUpdate(interview.job_id, {
+                            $inc: { [fieldToDecrement]: -1, "candidate_counts.cancelled": 1 }
+                        });
+                    }
+                }
+                return res.json({ success: true, message: "Meeting cancelled and status updated" });
             }
-        });
 
-        if (response.status === 204 || response.status === 200) {
-            return res.json({ success: true, message: "Meeting cancelled" });
+            return res.status(response.status).json(response.data);
+        } catch (error) {
+            console.error('Zoho Cancellation error details:', {
+                status: error.response?.status,
+                data: error.response?.data,
+                message: error.message,
+                url: error.config?.url
+            });
+
+            if (interview) {
+                try {
+                    await Interview.findByIdAndUpdate(interview._id, { status: 6 });
+                    await InterviewerAvailability.findOneAndUpdate(
+                        { interviewer: interview.interviewer_id, start_time: interview.date_time },
+                        { status: 1, $unset: { candidate_id: "" } }
+                    );
+                    if (interview.candidate_id) {
+                        await Candidate.findByIdAndUpdate(interview.candidate_id, {
+                            final_status: null,
+                            is_active: true,
+                            status: 5, // 5: cancelled
+                            $unset: { interview_id: "" }
+                        });
+                    }
+                    if (interview.job_id) {
+                        const fieldToDecrement = interview.status === 2 ? "candidate_counts.interview_in_review" : "candidate_counts.scheduled";
+                        await Job.findByIdAndUpdate(interview.job_id, {
+                            $inc: { [fieldToDecrement]: -1, "candidate_counts.cancelled": 1 }
+                        });
+                    }
+                } catch (cleanupErr) {
+                    console.error("Failed forced state update:", cleanupErr.message);
+                }
+            }
+
+            if (error.response && error.response.status === 404) {
+                return res.json({ success: true, message: "Meeting already cancelled in Zoho, DB updated" });
+            }
+
+            return res.json({
+                success: true,
+                message: "Meeting cancelled locally, Zoho error reported",
+                zohoError: error.response?.data || error.message
+            });
         }
-
-        return res.status(response.status).json(response.data);
     } catch (error) {
-        console.error('Error in meeting cancellation:', error.message);
-        if (error.response) {
-            return res.status(error.response.status).json(error.response.data);
-        }
-        res.status(500).json({ error: 'Error cancelling meeting', message: error.message });
+        next(error);
     }
 });
 

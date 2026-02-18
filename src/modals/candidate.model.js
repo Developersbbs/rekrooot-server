@@ -37,11 +37,7 @@ const candidateSchema = new mongoose.Schema({
         type: String,
     },
     location: String,
-    status: {
-        type: String,
-        enum: ['0', '1', '2', '3', '4', '5'],
-        default: '0'
-    },
+
     profile_pic: String,
     resume_url: String,
     resumes: [{
@@ -60,16 +56,15 @@ const candidateSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
-    interviewer_id: {
+    interview_id: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Interviewer'
+        ref: 'Interview'
     },
-    interview_date: String,
-    interview_time: String,
-    meeting_link: String,
-    session_id: String,
-    presenterId: String,
-    zsoid: String
+    status: {
+        type: Number,
+        default: 0
+    }, // 0: waiting, 1: scheduled, 2: rescheduled, 3: review, 4: interviewed, 5: cancelled
+    result_document_url: String
 }, {
     timestamps: true
 });

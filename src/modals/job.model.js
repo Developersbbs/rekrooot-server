@@ -53,16 +53,18 @@ const jobSchema = new mongoose.Schema({
         required: true
     },
     candidate_counts: {
-        applied: { type: Number, default: 0 },
         waiting: { type: Number, default: 0 },
         scheduled: { type: Number, default: 0 },
+        rescheduled: { type: Number, default: 0 },
+        interview_in_review: { type: Number, default: 0 },
         selected: { type: Number, default: 0 },
         rejected: { type: Number, default: 0 },
         no_show: { type: Number, default: 0 },
         cancelled: { type: Number, default: 0 },
         technical_issue: { type: Number, default: 0 },
         proxy: { type: Number, default: 0 },
-        on_hold: { type: Number, default: 0 }
+        on_hold: { type: Number, default: 0 },
+        trash: { type: Number, default: 0 }
     }
 }, {
     timestamps: true

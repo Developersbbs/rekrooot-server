@@ -17,7 +17,6 @@ Enum job_status {
 }
 
 Enum candidate_status {
-  "0" // APPLIED
   "1" // WAITING (Email sent, slot pending)
   "2" // SCHEDULED (Slot picked)
   "3" // SELECTED
@@ -27,12 +26,14 @@ Enum candidate_status {
 
 Enum interview_status {
   "0" // SCHEDULED
-  "1" // COMPLETED_SELECTED
-  "2" // COMPLETED_REJECTED
-  "3" // NO_SHOW
-  "4" // CANCELLED
-  "5" // TECH_ISSUE
-  "6" // PROXY_DETECTED
+  "1" // IN_REVIEW
+  "2" // RESCHEDULED
+  "3" // COMPLETED_SELECTED
+  "4" // COMPLETED_REJECTED
+  "5" // NO_SHOW
+  "6" // CANCELLED
+  "7" // TECH_ISSUE
+  "8" // PROXY_DETECTED
 }
 
 Enum slot_status {

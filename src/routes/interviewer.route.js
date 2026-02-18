@@ -109,7 +109,8 @@ router.get("/public/list", async (req, res, next) => {
     now.setHours(0, 0, 0, 0);
 
     const availabilities = await InterviewerAvailability.find({
-      start_time: { $gte: now }
+      start_time: { $gte: now },
+      status: 1 // Only available slots
     }).lean();
 
     // Map availabilities
@@ -130,7 +131,8 @@ router.get("/public/list", async (req, res, next) => {
       }
 
       // If status is 2 (booked), store the candidate_id string, else store 'available'
-      slotsMap[intId][dateStr][timeStr] = slot.status === 2 ? (slot.candidate_id?.toString() || 'booked') : 'available';
+      // Since we filtered for status 1, it should always be available.
+      slotsMap[intId][dateStr][timeStr] = 'available';
     });
 
     // Add slots to interviewers

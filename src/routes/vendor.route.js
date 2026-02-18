@@ -1,7 +1,8 @@
 import express from 'express';
 import Vendor from '../modals/vendor.model.js';
+import { Candidate } from '../modals/candidate.model.js';
 import mongoose from 'mongoose';
-import { requireAuth } from '../middlewares/auth.middleware.js';
+import { requireAuth, attachUser } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
@@ -24,7 +25,7 @@ router.get("/:id/public", async (req, res, next) => {
 });
 
 // GET /vendors - list vendors (support company_id filter)
-router.get("/", requireAuth, async (req, res, next) => {
+router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { company_id } = req.query;
         let query = {};
@@ -32,7 +33,32 @@ router.get("/", requireAuth, async (req, res, next) => {
             query.company_id = company_id;
         }
 
-        const vendors = await Vendor.find(query).sort({ created_at: -1 });
+        const vendors = await Vendor.find(query)
+            .populate('created_by', '_id username email')
+            .sort({ created_at: -1 });
+
+        // Get candidate counts for each vendor
+        const vendorIds = vendors.map(v => v._id);
+        const candidateCounts = await Candidate.aggregate([
+            {
+                $match: {
+                    vendor_id: { $in: vendorIds },
+                    trash: { $ne: true }
+                }
+            },
+            {
+                $group: {
+                    _id: '$vendor_id',
+                    count: { $sum: 1 }
+                }
+            }
+        ]);
+
+        // Create a map of vendor_id to candidate count
+        const countMap = candidateCounts.reduce((acc, item) => {
+            acc[item._id.toString()] = item.count;
+            return acc;
+        }, {});
 
         // Map to frontend format
         const formattedVendors = vendors.map(v => ({
@@ -42,7 +68,9 @@ router.get("/", requireAuth, async (req, res, next) => {
             contactNumber: v.contact,
             status: v.status,
             company_id: v.company_id,
-            createdAt: v.created_at
+            createdAt: v.created_at,
+            createdBy: v.created_by,
+            candidateCount: countMap[v._id.toString()] || 0
         }));
 
         res.json({ vendors: formattedVendors });
@@ -52,7 +80,7 @@ router.get("/", requireAuth, async (req, res, next) => {
 });
 
 // GET /vendors/:id - single vendor
-router.get("/:id", requireAuth, async (req, res, next) => {
+router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { id } = req.params;
 
@@ -60,11 +88,17 @@ router.get("/:id", requireAuth, async (req, res, next) => {
             return res.status(400).json({ error: "Invalid vendor ID" });
         }
 
-        const vendor = await Vendor.findById(id);
+        const vendor = await Vendor.findById(id).populate('created_by', '_id username email');
 
         if (!vendor) {
             return res.status(404).json({ error: "Vendor not found" });
         }
+
+        // Get candidate count for this vendor
+        const candidateCount = await Candidate.countDocuments({
+            vendor_id: vendor._id,
+            trash: { $ne: true }
+        });
 
         res.json({
             vendor: {
@@ -74,7 +108,9 @@ router.get("/:id", requireAuth, async (req, res, next) => {
                 contactNumber: vendor.contact,
                 status: vendor.status,
                 company_id: vendor.company_id,
-                createdAt: vendor.created_at
+                createdAt: vendor.created_at,
+                createdBy: vendor.created_by,
+                candidateCount
             }
         });
     } catch (err) {
@@ -83,7 +119,7 @@ router.get("/:id", requireAuth, async (req, res, next) => {
 });
 
 // POST /vendors - add new vendor
-router.post("/", requireAuth, async (req, res, next) => {
+router.post("/", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { vendorName, email, contactNumber, status, company_id } = req.body;
 
@@ -96,10 +132,14 @@ router.post("/", requireAuth, async (req, res, next) => {
             email,
             contact: contactNumber,
             status: status || 'Active',
-            company_id
+            company_id,
+            created_by: req.user.id
         });
 
         await vendor.save();
+
+        // Populate created_by for response
+        await vendor.populate('created_by', '_id username email');
 
         res.status(201).json({
             vendor: {
@@ -109,7 +149,9 @@ router.post("/", requireAuth, async (req, res, next) => {
                 contactNumber: vendor.contact,
                 status: vendor.status,
                 company_id: vendor.company_id,
-                createdAt: vendor.created_at
+                createdAt: vendor.created_at,
+                createdBy: vendor.created_by,
+                candidateCount: 0
             }
         });
     } catch (err) {
@@ -118,7 +160,7 @@ router.post("/", requireAuth, async (req, res, next) => {
 });
 
 // PUT /vendors/:id - update vendor
-router.put("/:id", requireAuth, async (req, res, next) => {
+router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { id } = req.params;
         const { vendorName, email, contactNumber, status } = req.body;
@@ -132,11 +174,17 @@ router.put("/:id", requireAuth, async (req, res, next) => {
                 status
             },
             { new: true }
-        );
+        ).populate('created_by', '_id username email');
 
         if (!vendor) {
             return res.status(404).json({ error: "Vendor not found" });
         }
+
+        // Get candidate count for this vendor
+        const candidateCount = await Candidate.countDocuments({
+            vendor_id: vendor._id,
+            trash: { $ne: true }
+        });
 
         res.json({
             vendor: {
@@ -146,7 +194,9 @@ router.put("/:id", requireAuth, async (req, res, next) => {
                 contactNumber: vendor.contact,
                 status: vendor.status,
                 company_id: vendor.company_id,
-                createdAt: vendor.created_at
+                createdAt: vendor.created_at,
+                createdBy: vendor.created_by,
+                candidateCount
             }
         });
     } catch (err) {

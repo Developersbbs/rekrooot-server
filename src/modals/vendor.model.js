@@ -24,6 +24,11 @@ const vendorSchema = new mongoose.Schema({
         ref: 'Company',
         required: true,
     },
+    created_by: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+    },
 }, {
     timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' }
 });
