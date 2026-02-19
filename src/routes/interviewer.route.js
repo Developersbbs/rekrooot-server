@@ -167,6 +167,28 @@ router.get("/:id/public", async (req, res, next) => {
   }
 });
 
+// List all interviews
+router.get("/all-interviews", requireAuth, async (req, res, next) => {
+  try {
+    const { company_id, created_by } = req.query;
+    let query = {};
+    if (company_id && company_id !== "all" && mongoose.Types.ObjectId.isValid(company_id)) {
+      query.company_id = company_id;
+    }
+    if (created_by && mongoose.Types.ObjectId.isValid(created_by)) {
+      query.created_by = created_by;
+    }
+
+    const interviews = await Interview.find(query)
+      .populate("interviewer_id", "name email")
+      .sort({ date_time: -1 });
+
+    return res.json({ interviews });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Get single interviewer by id
 router.get("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
   try {
@@ -321,23 +343,7 @@ router.get("/:id/interviews", requireAuth, requireSuperAdmin, async (req, res, n
   }
 });
 
-router.get("/all-interviews", requireAuth, async (req, res, next) => {
-  try {
-    const { company_id } = req.query;
-    let query = {};
-    if (company_id && company_id !== "all" && mongoose.Types.ObjectId.isValid(company_id)) {
-      query.company_id = company_id;
-    }
 
-    const interviews = await Interview.find(query)
-      .populate("interviewer_id", "name email")
-      .sort({ date_time: -1 });
-
-    return res.json({ interviews });
-  } catch (err) {
-    next(err);
-  }
-});
 
 // GET /:id/timeslots - Fetch and process availability intervals into slots
 router.get("/:id/timeslots", async (req, res, next) => {

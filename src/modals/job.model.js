@@ -40,8 +40,8 @@ const jobSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['0', '1', '2', '3'], // 0: TRASH, 1: INACTIVE, 2: ONHOLD, 3: ACTIVE
-        default: '3'
+        enum: ['0', '1', '2', '3'], // 0: ACTIVE, 1: INACTIVE, 2: ONHOLD
+        default: '0'
     },
     technologies: [{
         type: mongoose.Schema.Types.ObjectId,

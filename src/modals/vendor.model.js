@@ -16,8 +16,8 @@ const vendorSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['Active', 'Inactive'],
-        default: 'Active',
+        enum: ['0', '1'],
+        default: '0',
     },
     company_id: {
         type: mongoose.Schema.Types.ObjectId,

@@ -11,6 +11,7 @@ const interviewSchema = new mongoose.Schema(
         interviewer_name: { type: String },
         status: { type: Number, default: 0 }, // 0: scheduled, 1: rescheduled, 2: interview_in_review, 3: selected, 4: rejected, 5: no_show, 6: cancelled, 7: proxy, 8: technical_issue
         company_id: { type: mongoose.Schema.Types.ObjectId, ref: "Company" },
+        client_id: { type: mongoose.Schema.Types.ObjectId, ref: "Client" },
         job_id: { type: mongoose.Schema.Types.ObjectId, ref: "Job" },
         created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
         meeting_link: { type: String },

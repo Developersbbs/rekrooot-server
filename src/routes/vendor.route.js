@@ -27,10 +27,13 @@ router.get("/:id/public", async (req, res, next) => {
 // GET /vendors - list vendors (support company_id filter)
 router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
-        const { company_id } = req.query;
+        const { company_id, created_by } = req.query;
         let query = {};
         if (company_id && company_id !== 'all' && mongoose.Types.ObjectId.isValid(company_id)) {
             query.company_id = company_id;
+        }
+        if (created_by && mongoose.Types.ObjectId.isValid(created_by)) {
+            query.created_by = created_by;
         }
 
         const vendors = await Vendor.find(query)
@@ -131,7 +134,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             name: vendorName,
             email,
             contact: contactNumber,
-            status: status || 'Active',
+            status: status || '0',
             company_id,
             created_by: req.user.id
         });
@@ -213,6 +216,9 @@ router.delete("/:id", requireAuth, async (req, res, next) => {
         if (!vendor) {
             return res.status(404).json({ error: "Vendor not found" });
         }
+
+        // Set vendor_id to null for all candidates associated with this vendor
+        await Candidate.updateMany({ vendor_id: id }, { $set: { vendor_id: null } });
 
         res.json({ message: "Vendor deleted successfully" });
     } catch (err) {

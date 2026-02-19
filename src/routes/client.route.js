@@ -3,6 +3,9 @@ import mongoose from "mongoose";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import { Client } from "../modals/client.model.js";
+import { Candidate } from "../modals/candidate.model.js";
+import { Job } from "../modals/job.model.js";
+import { Interview } from "../modals/interview.model.js";
 
 const router = Router();
 
@@ -24,7 +27,7 @@ async function attachUser(req, res, next) {
 // GET all clients (optionally filtered by company)
 router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
-        const { company_id } = req.query;
+        const { company_id, created_by } = req.query;
 
         let query = {};
 
@@ -36,6 +39,10 @@ router.get("/", requireAuth, attachUser, async (req, res, next) => {
             if (mongoose.Types.ObjectId.isValid(company_id)) {
                 query.company_id = company_id;
             }
+        }
+
+        if (created_by && mongoose.Types.ObjectId.isValid(created_by)) {
+            query.created_by = created_by;
         }
 
         // If Super Admin and no company_id provided or "all", return all clients?
@@ -138,6 +145,11 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
 
         const result = await Client.findOneAndDelete(query);
         if (!result) return res.status(404).json({ message: "Client not found or unauthorized" });
+
+        // Cascading updates
+        await Candidate.updateMany({ client_id: id }, { $set: { client_id: null } });
+        await Job.deleteMany({ client_id: id });
+        await Interview.deleteMany({ client_id: id });
 
         return res.json({ message: "Client deleted" });
     } catch (err) {

@@ -126,6 +126,7 @@ router.post("/create", async (req, res, next) => {
                 presenter_id: contextId,
                 zsoid: zsoid,
                 company_id: candidate?.company_id,
+                client_id: candidate?.client_id,
                 job_id: candidate?.job_id,
                 created_by: candidate?.created_by,
                 status: 0

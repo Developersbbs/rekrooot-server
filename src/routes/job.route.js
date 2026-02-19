@@ -3,6 +3,8 @@ import mongoose from "mongoose";
 import { requireAuth, attachUser } from "../middlewares/auth.middleware.js";
 import { Job } from "../modals/job.model.js";
 import { Technology } from "../modals/technology.model.js";
+import { Candidate } from "../modals/candidate.model.js";
+import { Interview } from "../modals/interview.model.js";
 
 const router = Router();
 
@@ -172,6 +174,10 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
 
         const result = await Job.findOneAndDelete(query);
         if (!result) return res.status(404).json({ message: "Job not found or unauthorized" });
+
+        // Cascading updates
+        await Candidate.updateMany({ job_id: id }, { $set: { job_id: null } });
+        await Interview.deleteMany({ job_id: id });
 
         return res.json({ message: "Job deleted successfully" });
     } catch (err) {

@@ -22,6 +22,24 @@ router.get("/me", requireAuth, async (req, res, next) => {
   }
 });
 
+router.post("/check-email", async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: "Account not found" });
+    }
+
+    return res.json({ exists: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/logout", requireAuth, async (req, res, next) => {
   try {
     const { uid } = req.auth;
