@@ -9,6 +9,9 @@ import InterviewerAvailability from "../modals/interviewerAvailability.model.js"
 import axios from "axios";
 import nodemailer from "nodemailer";
 import { ENV } from "../config/env.js";
+import multiparty from "multiparty";
+import fs from "fs";
+import { extractTextFromFile, parseResumeText } from "../services/resumeParser.js";
 
 const router = Router();
 
@@ -138,6 +141,53 @@ router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
     } catch (err) {
         next(err);
     }
+});
+
+router.post("/parse", requireAuth, attachUser, async (req, res, next) => {
+    const form = new multiparty.Form();
+
+    form.parse(req, async (err, fields, files) => {
+        if (err) {
+            return res.status(500).json({
+                success: false,
+                message: "Error parsing form: " + err.message
+            });
+        }
+
+        const file = files?.file?.[0];
+        if (!file) {
+            return res.status(400).json({
+                success: false,
+                message: "No file uploaded"
+            });
+        }
+
+        const filePath = file.path;
+        try {
+            console.log("Processing resume upload:", file.originalFilename);
+            const text = await extractTextFromFile(filePath, file.originalFilename, file.size);
+            const parsedData = parseResumeText(text);
+
+            // Cleanup temp file
+            fs.unlink(filePath, (unlinkErr) => {
+                if (unlinkErr) console.warn("Failed to cleanup temp file:", unlinkErr.message);
+            });
+
+            return res.json({
+                success: true,
+                data: parsedData,
+            });
+        } catch (error) {
+            console.error("Resume parsing error:", error);
+            if (filePath) {
+                fs.unlink(filePath, () => { });
+            }
+            return res.status(500).json({
+                success: false,
+                message: "Error extracting text: " + error.message,
+            });
+        }
+    });
 });
 
 const FINAL_STATUS_MAP = {

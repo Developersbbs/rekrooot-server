@@ -27,7 +27,7 @@ async function requireSuperAdmin(req, res, next) {
 }
 
 // List technologies
-router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
+router.get("/", requireAuth, async (req, res, next) => {
   try {
     const technologies = await Technology.find({}).sort({ created_at: -1 });
     return res.json({ technologies });

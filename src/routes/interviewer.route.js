@@ -88,7 +88,7 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 });
 
 // List interviewers (SuperAdmin managed global resource)
-router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
+router.get("/", requireAuth, async (req, res, next) => {
   try {
     let query = {};
 

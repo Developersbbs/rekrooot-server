@@ -2,6 +2,12 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
+import { Team } from "../modals/team.model.js";
+import { Job } from "../modals/job.model.js";
+import { Candidate } from "../modals/candidate.model.js";
+import { Client } from "../modals/client.model.js";
+import { Interview } from "../modals/interview.model.js";
+import Interviewer from "../modals/interviewer.model.js";
 import { getAdminAuth } from "../config/firebaseAdmin.js";
 
 const router = Router();
@@ -167,6 +173,13 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
             query = { firebase_uid: id };
         }
 
+        const userToDelete = await User.findOne(query);
+        if (!userToDelete) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        const userId = userToDelete._id;
+
         // Delete from Firebase Auth
         if (userToDelete.firebase_uid) {
             try {
@@ -176,7 +189,26 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
             }
         }
 
-        await User.deleteOne(query);
+        // Cleanup in Teams
+        // If the user was a team lead, delete the entire team
+        await Team.deleteMany({ team_lead: userId });
+
+        // Remove from members array in other teams
+        await Team.updateMany(
+            { members: userId },
+            { $pull: { members: userId } }
+        );
+
+        // Cleanup created_by in other collections: jobs, candidates, clients, interviews, interviewers
+        await Promise.all([
+            Job.updateMany({ created_by: userId }, { $set: { created_by: null } }),
+            Candidate.updateMany({ created_by: userId }, { $set: { created_by: null } }),
+            Client.updateMany({ created_by: userId }, { $set: { created_by: null } }),
+            Interview.updateMany({ created_by: userId }, { $set: { created_by: null } }),
+            Interviewer.updateMany({ created_by: userId }, { $set: { created_by: null } })
+        ]);
+
+        await User.deleteOne({ _id: userId });
 
         return res.json({ message: "User deleted successfully" });
     } catch (err) {
