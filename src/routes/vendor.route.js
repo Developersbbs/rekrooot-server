@@ -29,9 +29,15 @@ router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { company_id, created_by } = req.query;
         let query = {};
-        if (company_id && company_id !== 'all' && mongoose.Types.ObjectId.isValid(company_id)) {
+
+        // If not super admin, must filter by user's company
+        if (req.user.role !== 0) {
+            query.company_id = req.user.company_id;
+        } else if (company_id && company_id !== 'all' && mongoose.Types.ObjectId.isValid(company_id)) {
+            // Super Admin can filter by company
             query.company_id = company_id;
         }
+
         if (created_by && mongoose.Types.ObjectId.isValid(created_by)) {
             query.created_by = created_by;
         }
@@ -126,7 +132,9 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { vendorName, email, contactNumber, status, company_id } = req.body;
 
-        if (!company_id) {
+        const target_company_id = req.user.role === 0 ? company_id : req.user.company_id;
+
+        if (!target_company_id) {
             return res.status(400).json({ error: "Company ID is required" });
         }
 
@@ -135,7 +143,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             email,
             contact: contactNumber,
             status: status || '0',
-            company_id,
+            company_id: target_company_id,
             created_by: req.user.id
         });
 
@@ -168,8 +176,13 @@ router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
         const { id } = req.params;
         const { vendorName, email, contactNumber, status } = req.body;
 
-        const vendor = await Vendor.findByIdAndUpdate(
-            id,
+        const query = { _id: id };
+        if (req.user.role !== 0) {
+            query.company_id = req.user.company_id;
+        }
+
+        const vendor = await Vendor.findOneAndUpdate(
+            query,
             {
                 name: vendorName,
                 email,
@@ -180,7 +193,7 @@ router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
         ).populate('created_by', '_id username email');
 
         if (!vendor) {
-            return res.status(404).json({ error: "Vendor not found" });
+            return res.status(404).json({ error: "Vendor not found or unauthorized" });
         }
 
         // Get candidate count for this vendor
@@ -208,13 +221,19 @@ router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
 });
 
 // DELETE /vendors/:id - delete vendor
-router.delete("/:id", requireAuth, async (req, res, next) => {
+router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
     try {
         const { id } = req.params;
-        const vendor = await Vendor.findByIdAndDelete(id);
+
+        const query = { _id: id };
+        if (req.user.role !== 0) {
+            query.company_id = req.user.company_id;
+        }
+
+        const vendor = await Vendor.findOneAndDelete(query);
 
         if (!vendor) {
-            return res.status(404).json({ error: "Vendor not found" });
+            return res.status(404).json({ error: "Vendor not found or unauthorized" });
         }
 
         // Set vendor_id to null for all candidates associated with this vendor

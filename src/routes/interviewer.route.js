@@ -190,7 +190,7 @@ router.get("/all-interviews", requireAuth, async (req, res, next) => {
 });
 
 // Get single interviewer by id
-router.get("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
+router.get("/:id", requireAuth, async (req, res, next) => {
   try {
     const { id } = req.params;
 
