@@ -252,21 +252,25 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             interview_id
         });
 
-        // Increment applied count for the job
+        // ✅ FIXED: Actually pass the update object to Job.findByIdAndUpdate
         if (job_id) {
-            const update = { "candidate_counts.applied": 1 };
-            if (!interview_id) {
-                update["candidate_counts.waiting"] = 1;
-                candidate.status = 0; // waiting
-            } else {
-                update["candidate_counts.scheduled"] = 1;
-                candidate.status = 1; // scheduled
-            }
-            await candidate.save();
-            await Job.findByIdAndUpdate(job_id, {
+            const jobUpdate = { $inc: {} };
 
-            }).catch(e => console.error("Failed to update job counts:", e));
+            if (!interview_id) {
+                jobUpdate.$inc["candidate_counts.waiting"] = 1;
+                jobUpdate.$inc["candidate_counts.applied"] = 1;
+                candidate.status = 0;
+            } else {
+                jobUpdate.$inc["candidate_counts.scheduled"] = 1;
+                jobUpdate.$inc["candidate_counts.applied"] = 1;
+                candidate.status = 1;
+            }
+
+            await candidate.save();
+            await Job.findByIdAndUpdate(job_id, jobUpdate)  // ✅ jobUpdate passed here
+                .catch(e => console.error("Failed to update job counts:", e));
         }
+
         console.log("Created Candidate:", candidate);
         return res.status(201).json({ candidate });
     } catch (err) {

@@ -51,7 +51,7 @@ router.post("/create", async (req, res, next) => {
             }
         }
 
-        // 2. Fetch Candidate and Interviewer for DB operations later
+        // 2. Fetch Candidate and Interviewer
         let candidate = null;
         if (candidateId) {
             candidate = await Candidate.findById(candidateId);
@@ -69,7 +69,6 @@ router.post("/create", async (req, res, next) => {
             contextId = interviewer.zoho_meet_uid;
         }
 
-        // Fallback to default
         if (!contextId) {
             contextId = ENV.ZOHO_DEFAULT_PRESENTER_ID || '60058686791';
         }
@@ -133,6 +132,7 @@ router.post("/create", async (req, res, next) => {
             };
 
             const newInterview = await Interview.create(interviewData);
+
             if (candidate) {
                 await Candidate.findByIdAndUpdate(candidateId, {
                     interview_id: newInterview._id,
@@ -142,17 +142,10 @@ router.post("/create", async (req, res, next) => {
 
             if (interviewer && startTime) {
                 const startDate = new Date(startTime);
-
                 try {
                     const availability = await InterviewerAvailability.findOneAndUpdate(
-                        {
-                            interviewer: interviewerId,
-                            start_time: startDate
-                        },
-                        {
-                            status: 2,
-                            candidate_id: candidateId
-                        },
+                        { interviewer: interviewerId, start_time: startDate },
+                        { status: 2, candidate_id: candidateId },
                         { new: true }
                     );
 
@@ -164,13 +157,22 @@ router.post("/create", async (req, res, next) => {
                 }
             }
 
-            // Update Job candidate counts (Scheduled + 1, Waiting - 1)
+            // ✅ FIXED: Decrement actual previous status, not always waiting
             if (candidate?.job_id) {
                 try {
+                    // Re-fetch to get latest status before this meeting was created
+                    const freshCandidate = await Candidate.findById(candidateId);
+
+                    const prevStatusField =
+                        freshCandidate?.status === 1 ? "candidate_counts.scheduled" :
+                        freshCandidate?.status === 2 ? "candidate_counts.rescheduled" :
+                        freshCandidate?.interview_id ? "candidate_counts.scheduled" :
+                        "candidate_counts.waiting"; // status 0 = truly waiting
+
                     await Job.findByIdAndUpdate(candidate.job_id, {
                         $inc: {
                             "candidate_counts.scheduled": 1,
-                            "candidate_counts.waiting": -1
+                            [prevStatusField]: -1
                         }
                     });
                 } catch (jobErr) {
@@ -200,6 +202,7 @@ router.post("/create", async (req, res, next) => {
     }
 });
 
+// POST /cancel - Cancel a Zoho meeting
 router.post("/cancel", async (req, res, next) => {
     try {
         const { authToken, sessionId, presenterId } = req.body;
@@ -226,39 +229,54 @@ router.post("/cancel", async (req, res, next) => {
 
         const url = `https://meeting.zoho.in/api/v2/${finalZsoid}/sessions/${sessionId}.json`;
 
+        // Helper to run DB cleanup after cancellation
+        const runCancelCleanup = async () => {
+            if (!interview) return;
+
+            await Interview.findByIdAndUpdate(interview._id, { status: 6 });
+
+            await InterviewerAvailability.findOneAndUpdate(
+                { interviewer: interview.interviewer_id, start_time: interview.date_time },
+                { status: 1, $unset: { candidate_id: "" } }
+            );
+
+            if (interview.candidate_id) {
+                await Candidate.findByIdAndUpdate(interview.candidate_id, {
+                    final_status: null,
+                    is_active: true,
+                    status: 5, // cancelled
+                    $unset: { interview_id: "" }
+                });
+            }
+
+            if (interview.job_id) {
+                // ✅ FIXED: Decrement correct field based on interview status
+                const fieldToDecrement =
+                    interview.status === 2 ? "candidate_counts.interview_in_review" :
+                    interview.status === 1 ? "candidate_counts.rescheduled" :
+                    "candidate_counts.scheduled";
+
+                await Job.findByIdAndUpdate(interview.job_id, {
+                    $inc: {
+                        [fieldToDecrement]: -1,
+                        "candidate_counts.cancelled": 1
+                    }
+                });
+            }
+        };
+
         try {
             const response = await axios.delete(url, {
-                headers: {
-                    'Authorization': `Zoho-oauthtoken ${accessToken}`
-                }
+                headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
             });
 
             if (response.status === 204 || response.status === 200) {
-                if (interview) {
-                    await Interview.findByIdAndUpdate(interview._id, { status: 6 });
-                    await InterviewerAvailability.findOneAndUpdate(
-                        { interviewer: interview.interviewer_id, start_time: interview.date_time },
-                        { status: 1, $unset: { candidate_id: "" } }
-                    );
-                    if (interview.candidate_id) {
-                        await Candidate.findByIdAndUpdate(interview.candidate_id, {
-                            final_status: null,
-                            is_active: true,
-                            status: 5, // 5: cancelled
-                            $unset: { interview_id: "" }
-                        });
-                    }
-                    if (interview.job_id) {
-                        const fieldToDecrement = interview.status === 2 ? "candidate_counts.interview_in_review" : "candidate_counts.scheduled";
-                        await Job.findByIdAndUpdate(interview.job_id, {
-                            $inc: { [fieldToDecrement]: -1, "candidate_counts.cancelled": 1 }
-                        });
-                    }
-                }
+                await runCancelCleanup();
                 return res.json({ success: true, message: "Meeting cancelled and status updated" });
             }
 
             return res.status(response.status).json(response.data);
+
         } catch (error) {
             console.error('Zoho Cancellation error details:', {
                 status: error.response?.status,
@@ -267,33 +285,13 @@ router.post("/cancel", async (req, res, next) => {
                 url: error.config?.url
             });
 
-            if (interview) {
-                try {
-                    await Interview.findByIdAndUpdate(interview._id, { status: 6 });
-                    await InterviewerAvailability.findOneAndUpdate(
-                        { interviewer: interview.interviewer_id, start_time: interview.date_time },
-                        { status: 1, $unset: { candidate_id: "" } }
-                    );
-                    if (interview.candidate_id) {
-                        await Candidate.findByIdAndUpdate(interview.candidate_id, {
-                            final_status: null,
-                            is_active: true,
-                            status: 5, // 5: cancelled
-                            $unset: { interview_id: "" }
-                        });
-                    }
-                    if (interview.job_id) {
-                        const fieldToDecrement = interview.status === 2 ? "candidate_counts.interview_in_review" : "candidate_counts.scheduled";
-                        await Job.findByIdAndUpdate(interview.job_id, {
-                            $inc: { [fieldToDecrement]: -1, "candidate_counts.cancelled": 1 }
-                        });
-                    }
-                } catch (cleanupErr) {
-                    console.error("Failed forced state update:", cleanupErr.message);
-                }
+            try {
+                await runCancelCleanup();
+            } catch (cleanupErr) {
+                console.error("Failed forced state update:", cleanupErr.message);
             }
 
-            if (error.response && error.response.status === 404) {
+            if (error.response?.status === 404) {
                 return res.json({ success: true, message: "Meeting already cancelled in Zoho, DB updated" });
             }
 
@@ -303,6 +301,7 @@ router.post("/cancel", async (req, res, next) => {
                 zohoError: error.response?.data || error.message
             });
         }
+
     } catch (error) {
         next(error);
     }
