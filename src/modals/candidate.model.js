@@ -61,7 +61,7 @@ const candidateSchema = new mongoose.Schema({
     status: {
         type: Number,
         default: 0
-    }, // 0: waiting, 1: scheduled, 2: rescheduled, 3: review, 4: interviewed, 5: cancelled, 6:migrate
+    }, // 0: waiting, 1: scheduled, 2: rescheduled, 3: review, 4: interviewed, 5: cancelled
     result_document_url: String
 }, {
     timestamps: true
