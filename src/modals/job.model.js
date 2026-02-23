@@ -40,7 +40,7 @@ const jobSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['0', '1', '2', '3'], // 0: ACTIVE, 1: INACTIVE, 2: ONHOLD
+        enum: ['0', '1', '2'], // 0: ACTIVE, 1: INACTIVE, 2: ONHOLD
         default: '0'
     },
     technologies: [{

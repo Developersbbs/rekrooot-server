@@ -264,13 +264,143 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             }
             await candidate.save();
             await Job.findByIdAndUpdate(job_id, {
-                $inc: update
+
             }).catch(e => console.error("Failed to update job counts:", e));
         }
-
+        console.log("Created Candidate:", candidate);
         return res.status(201).json({ candidate });
     } catch (err) {
         next(err);
+    }
+});
+
+router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { new_job_id, new_interview_id, new_client_id, new_vendor_id } = req.body;
+
+        const candidate = await Candidate.findById(id);
+        if (!candidate) {
+            return res.status(404).json({
+                status: "error",
+                message: "Candidate not found"
+            });
+        }
+
+        // ✅ STEP 1: Snapshot candidate status (THIS is what we store)
+        const previousJobRole = candidate.job_id;
+        const previousClient = candidate.client_id;
+        const previousVendor = candidate.vendor_id;
+        const previousCandidateStatus = candidate.status; // 🔥 IMPORTANT
+
+        let previousInterviewTime = null;
+        let previousInterview = null;
+
+        // ✅ STEP 2: Handle existing interview (if any)
+        if (candidate.interview_id) {
+            const interview = await Interview.findById(candidate.interview_id).lean();
+
+            if (interview) {
+                previousInterviewTime = interview.date_time;
+                previousInterview = interview._id;
+
+                // ✅ Cancel Zoho Meeting FIRST
+                if (interview.session_id && interview.presenter_id) {
+                    try {
+                        const tokenUrl = `https://accounts.zoho.in/oauth/v2/token?refresh_token=${ENV.ZOHO_MEET_REFRESH_TOKEN}&client_id=${ENV.ZOHO_MEET_CLIENT_ID}&client_secret=${ENV.ZOHO_MEET_CLIENT_SECRET}&grant_type=refresh_token`;
+
+                        const tokenResponse = await axios.post(tokenUrl);
+                        const accessToken = tokenResponse.data.access_token;
+
+                        if (accessToken) {
+                            const zsoid = interview.zsoid || interview.presenter_id;
+                            const cancelUrl = `https://meeting.zoho.in/api/v2/${zsoid}/sessions/${interview.session_id}.json`;
+
+                            await axios.delete(cancelUrl, {
+                                headers: {
+                                    Authorization: `Zoho-oauthtoken ${accessToken}`
+                                }
+                            }).catch(e =>
+                                console.warn("Zoho cancel failed or already cancelled:", e.message)
+                            );
+                        }
+                    } catch (e) {
+                        console.warn("Zoho cancellation failed:", e.message);
+                    }
+                }
+
+                // ✅ Mark interview as cancelled (DB update)
+                await Interview.findByIdAndUpdate(candidate.interview_id, {
+                    status: 6 // cancelled
+                });
+
+                // ✅ Free interviewer availability
+                if (previousInterview && previousInterviewTime) {
+                    await InterviewerAvailability.findOneAndUpdate(
+                        {
+                            interviewer: previousInterview,
+                            start_time: previousInterviewTime
+                        },
+                        {
+                            status: 1,
+                            $unset: { candidate_id: "" }
+                        }
+                    ).catch(e =>
+                        console.error("Failed to free availability:", e)
+                    );
+                }
+            }
+        }
+
+        // ✅ STEP 3: Build candidate update fields
+        const updateFields = { isMigrated: true };
+
+        if (new_job_id) updateFields.job_id = new_job_id;
+        if (new_client_id) updateFields.client_id = new_client_id;
+        if (new_vendor_id) updateFields.vendor_id = new_vendor_id;
+
+        // New status after migration
+        if (new_interview_id) {
+            updateFields.interview_id = new_interview_id;
+            updateFields.status = 1; // rescheduled
+        } else {
+            updateFields.status = 0; // waiting
+        }
+
+        // ✅ STEP 4: Push migration history (STORE ONLY CANDIDATE STATUS)
+        const updatedCandidate = await Candidate.findByIdAndUpdate(
+            id,
+            {
+                $push: {
+                    migrationHistory: {
+                        previous_job_role: previousJobRole,
+                        previous_Status: previousCandidateStatus, // 🔥 FIXED HERE
+                        previous_Interview: previousInterview,
+                        previous_Client: previousClient,
+                        previous_Vendor: previousVendor,
+                        previous_interview_AttendBy: previousInterviewTime,
+                        migratedAt: new Date()
+                    }
+                },
+                $set: updateFields,
+                ...(new_interview_id ? {} : { $unset: { interview_id: "" } })
+            },
+            { new: true }
+        );
+
+        return res.status(200).json({
+            status: "success",
+            message: "Candidate Migrated Successfully",
+            data: updatedCandidate
+        });
+
+    } catch (error) {
+        console.error("Migration error:", error);
+        return res.status(500).json({
+            status: "error",
+            message: "An error occurred during migration",
+            error: error.message
+        });
     }
 });
 
@@ -404,6 +534,9 @@ router.post("/:id/confirm-slot", async (req, res, next) => {
         next(err);
     }
 });
+
+
+
 
 router.put("/:id", requireAuth, attachUser, async (req, res, next) => {
     try {
@@ -659,5 +792,7 @@ router.delete("/:id/permanent", requireAuth, attachUser, async (req, res, next) 
         next(err);
     }
 });
+
+
 
 export default router;
