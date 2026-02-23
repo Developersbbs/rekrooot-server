@@ -70,7 +70,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             company_id
         } = req.body;
 
-        if (!title || !client_id) {
+        if (!title || !client_id) {-1
             return res.status(400).json({ message: "Title and Client ID are required" });
         }
 
