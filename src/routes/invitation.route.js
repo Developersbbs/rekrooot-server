@@ -81,7 +81,7 @@ router.get("/validate", async (req, res, next) => {
 
 router.post("/", requireAuth, attachUser, async (req, res, next) => {
   try {
-    // Authorization: SuperAdmin (role 0), Recruiter Admin (role 1) or Lead Recruiter (role 2)
+    // Authorization
     if (req.user.role !== 0 && req.user.role !== 1 && req.user.role !== 2) {
       return res.status(403).json({ message: "You are not allowed to invite users" });
     }
@@ -96,7 +96,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
       return res.status(400).json({ message: "Invalid company_id" });
     }
 
-    // Recruiter Admin (1) and Lead Recruiter (2) can only invite to their own company
+    // Restrict company access for role 1 & 2
     if (req.user.role === 1 || req.user.role === 2) {
       if (!req.user.company_id) {
         return res.status(400).json({ message: "User is not associated with any company" });
@@ -117,53 +117,62 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
       return res.status(400).json({ message: "Invalid role" });
     }
 
-    // Default lead_recruiter_id if inviter is a Lead Recruiter
-    let finalLeadRecruiterId = lead_recruiter_id;
-    if (req.user.role === 2 && roleId === 3) {
-      finalLeadRecruiterId = req.user._id;
-    }
-
-    let teamId = null;
-    if (team_id !== undefined && team_id !== null && team_id !== "") {
-      if (!mongoose.Types.ObjectId.isValid(team_id)) {
-        return res.status(400).json({ message: "Invalid team_id" });
-      }
-      teamId = team_id;
-    } else if (finalLeadRecruiterId && mongoose.Types.ObjectId.isValid(finalLeadRecruiterId)) {
-      // Auto-lookup team based on lead_recruiter_id
-      const team = await Team.findOne({ team_lead: finalLeadRecruiterId });
-      if (team) {
-        teamId = team._id;
-      }
-    }
-
-    // Recruiter Admin cannot invite other Recruiter Admins
     if (req.user.role === 1 && roleId === 1) {
       return res.status(403).json({ message: "Recruiter Admin cannot invite other Recruiter Admins" });
     }
 
     const emailNormalized = email.trim().toLowerCase();
 
-    // Prevent inviting an email that already has an account
+    // ❌ Prevent inviting if Mongo user already exists
     const existingMongoUser = await User.findOne({
       email: { $regex: new RegExp(`^${escapeRegex(emailNormalized)}$`, "i") },
     });
+
     if (existingMongoUser) {
       return res.status(409).json({ message: "Email already belongs to an existing user" });
     }
 
+    // ❌ Prevent inviting if Firebase user already exists
     try {
       await getAdminAuth().getUserByEmail(emailNormalized);
       return res.status(409).json({ message: "Email already has a Firebase account" });
     } catch (err) {
-      // If Firebase user does not exist, continue.
       if (err?.code !== "auth/user-not-found") {
         return next(err);
       }
     }
 
+
+    const existingInvitation = await Invitation.findOne({
+      email: emailNormalized,
+      company_id,
+    });
+
+    if (existingInvitation) {
+      return res.status(409).json({
+        message: "Invitation already sent to this email",
+      });
+    }
+
+    // Generate new token
     const token = generateToken();
-    const expires_at = new Date(Date.now() + 48 * 60 * 60 * 1000);
+
+    let finalLeadRecruiterId = lead_recruiter_id;
+
+    if (req.user.role === 2 && roleId === 3) {
+      finalLeadRecruiterId = req.user._id;
+    }
+
+    let teamId = null;
+
+    if (team_id && mongoose.Types.ObjectId.isValid(team_id)) {
+      teamId = team_id;
+    } else if (finalLeadRecruiterId && mongoose.Types.ObjectId.isValid(finalLeadRecruiterId)) {
+      const team = await Team.findOne({ team_lead: finalLeadRecruiterId });
+      if (team) {
+        teamId = team._id;
+      }
+    }
 
     const invitationData = {
       email: emailNormalized,
@@ -171,10 +180,9 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
       company_id,
       role: roleId,
       invited_by: req.user._id,
-      expires_at,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days expiration
     };
 
-    // Only store recruiter-specific fields for Lead Recruiter (2) or Recruiter (3)
     if (roleId === 2 || roleId === 3) {
       invitationData.team_id = teamId;
       invitationData.lead_recruiter_id = finalLeadRecruiterId || null;
@@ -183,7 +191,8 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
 
     const invitation = await Invitation.create(invitationData);
 
-    const inviteUrl = `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/createaccount?token=${token}`;
+    const inviteUrl =
+      `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/createaccount?token=${token}`;
 
     let mail_sent = false;
     let mail_error = null;
@@ -192,7 +201,9 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
       await sendInvitationEmail({ to: emailNormalized, inviteUrl });
       mail_sent = true;
     } catch (mailErr) {
-      mail_error = mailErr instanceof Error ? mailErr.message : "Failed to send email";
+      mail_error =
+        mailErr instanceof Error ? mailErr.message : "Failed to send email";
+
       console.error("[invitations] Failed to send invitation email", {
         to: emailNormalized,
         error: mail_error,
@@ -208,7 +219,6 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
         team_id: invitation.team_id,
         role: invitation.role,
         invited_by: invitation.invited_by,
-        expires_at: invitation.expires_at,
         created_at: invitation.created_at,
       },
       invite_url: inviteUrl,
@@ -218,9 +228,13 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
   } catch (err) {
     if (err?.code === 11000) {
       const key = err?.keyPattern ? Object.keys(err.keyPattern)[0] : undefined;
+
       if (key === "token") {
-        return res.status(409).json({ message: "Invitation token conflict, please retry" });
+        return res.status(409).json({
+          message: "Invitation token conflict, please retry",
+        });
       }
+
       return res.status(409).json({ message: "Duplicate key error" });
     }
 
@@ -378,5 +392,7 @@ router.post("/accept", requireAuth, async (req, res, next) => {
     return next(err);
   }
 });
+
+
 
 export default router;

@@ -10,6 +10,7 @@ const invitationSchema = new mongoose.Schema(
     lead_recruiter_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     region: { type: String, default: null },
     role: { type: Number, required: true },
+    sent_button:{type:Boolean, default:false},
 
     invited_by: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     expires_at: { type: Date, required: true },

@@ -7,6 +7,7 @@ import { Interview } from "../modals/interview.model.js";
 import { Candidate } from "../modals/candidate.model.js";
 import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
 import { Job } from "../modals/job.model.js";
+import { updateJobCandidateCounts } from "../services/jobService.js";
 
 const router = Router();
 
@@ -160,21 +161,15 @@ router.post("/create", async (req, res, next) => {
             // ✅ FIXED: Decrement actual previous status, not always waiting
             if (candidate?.job_id) {
                 try {
-                    // Re-fetch to get latest status before this meeting was created
-                    const freshCandidate = await Candidate.findById(candidateId);
-
+                    // Use the status from the candidate object we fetched at the beginning of the request
+                    // to determine the CORRECT previous status field to decrement.
                     const prevStatusField =
-                        freshCandidate?.status === 1 ? "candidate_counts.scheduled" :
-                        freshCandidate?.status === 2 ? "candidate_counts.rescheduled" :
-                        freshCandidate?.interview_id ? "candidate_counts.scheduled" :
-                        "candidate_counts.waiting"; // status 0 = truly waiting
+                        candidate.status === 1 ? "scheduled" :
+                            candidate.status === 2 ? "rescheduled" :
+                                candidate.interview_id ? "scheduled" :
+                                    "waiting";
 
-                    await Job.findByIdAndUpdate(candidate.job_id, {
-                        $inc: {
-                            "candidate_counts.scheduled": 1,
-                            [prevStatusField]: -1
-                        }
-                    });
+                    await updateJobCandidateCounts(candidate.job_id, prevStatusField, "scheduled");
                 } catch (jobErr) {
                     console.error("Failed to update Job candidate counts:", jobErr.message);
                 }
@@ -250,18 +245,12 @@ router.post("/cancel", async (req, res, next) => {
             }
 
             if (interview.job_id) {
-                // ✅ FIXED: Decrement correct field based on interview status
-                const fieldToDecrement =
-                    interview.status === 2 ? "candidate_counts.interview_in_review" :
-                    interview.status === 1 ? "candidate_counts.rescheduled" :
-                    "candidate_counts.scheduled";
+                const oldStatusField =
+                    interview.status === 2 ? "interview_in_review" :
+                        interview.status === 1 ? "rescheduled" :
+                            "scheduled";
 
-                await Job.findByIdAndUpdate(interview.job_id, {
-                    $inc: {
-                        [fieldToDecrement]: -1,
-                        "candidate_counts.cancelled": 1
-                    }
-                });
+                await updateJobCandidateCounts(interview.job_id, oldStatusField, "cancelled");
             }
         };
 

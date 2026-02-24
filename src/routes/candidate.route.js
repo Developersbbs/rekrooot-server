@@ -4,7 +4,6 @@ import { requireAuth, attachUser } from "../middlewares/auth.middleware.js";
 import { Candidate } from "../modals/candidate.model.js";
 import { Job } from "../modals/job.model.js";
 import { Interview } from "../modals/interview.model.js";
-import Interviewer from "../modals/interviewer.model.js";
 import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
 import axios from "axios";
 import nodemailer from "nodemailer";
@@ -12,29 +11,9 @@ import { ENV } from "../config/env.js";
 import multiparty from "multiparty";
 import fs from "fs";
 import { extractTextFromFile, parseResumeText } from "../services/resumeParser.js";
+import { updateJobCandidateCounts } from "../services/jobService.js";
 
 const router = Router();
-
-// Helper function to update job candidate counts
-const updateJobCandidateCounts = async (jobId, oldStatus = null, newStatus = null) => {
-    if (!jobId) return;
-
-    const updateQuery = { $inc: {} };
-
-    // Decrement old status count
-    if (oldStatus) {
-        updateQuery.$inc[`candidate_counts.${oldStatus}`] = -1;
-    }
-
-    // Increment new status count
-    if (newStatus) {
-        updateQuery.$inc[`candidate_counts.${newStatus}`] = 1;
-    }
-
-    if (Object.keys(updateQuery.$inc).length > 0) {
-        await Job.findByIdAndUpdate(jobId, updateQuery);
-    }
-};
 
 router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
@@ -371,7 +350,50 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
             updateFields.status = 0; // waiting
         }
 
-        // ✅ STEP 4: Push migration history (STORE ONLY CANDIDATE STATUS)
+        // ✅ STEP 4: Update Job Counts if job changed
+        if (new_job_id && previousJobRole && new_job_id.toString() !== previousJobRole.toString()) {
+            try {
+                // 1. Determine old status field
+                let oldStatusField = 'waiting';
+                if (candidate.result) {
+                    oldStatusField = RESULT_TO_JOB_FIELD[candidate.result] || 'waiting';
+                } else {
+                    if (previousCandidateStatus === 1) oldStatusField = 'scheduled';
+                    else if (previousCandidateStatus === 2) oldStatusField = 'rescheduled';
+                    else if (previousCandidateStatus === 3) oldStatusField = 'interview_in_review';
+                    else if (previousCandidateStatus === 5) oldStatusField = 'cancelled';
+                    else oldStatusField = 'waiting';
+                }
+
+                // 2. Determine new status field
+                const newStatusField = new_interview_id ? 'scheduled' : 'waiting';
+
+                // 3. Decrement old job counts
+                await Job.findByIdAndUpdate(previousJobRole, {
+                    $inc: {
+                        [`candidate_counts.${oldStatusField}`]: -1,
+                        'candidate_counts.applied': -1
+                    }
+                });
+
+                // 4. Increment new job counts
+                await Job.findByIdAndUpdate(new_job_id, {
+                    $inc: {
+                        [`candidate_counts.${newStatusField}`]: 1,
+                        'candidate_counts.applied': 1
+                    }
+                });
+
+                // 5. Unset obsoleted result data for the new job
+                updateFields.result = undefined;
+                updateFields.result_document_url = undefined;
+
+            } catch (countError) {
+                console.error("Failed to update job counts during migration:", countError.message);
+            }
+        }
+
+        // ✅ STEP 5: Push migration history (STORE ONLY CANDIDATE STATUS)
         const updatedCandidate = await Candidate.findByIdAndUpdate(
             id,
             {
@@ -387,7 +409,11 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
                     }
                 },
                 $set: updateFields,
-                ...(new_interview_id ? {} : { $unset: { interview_id: "" } })
+                $unset: {
+                    ...(new_interview_id ? {} : { interview_id: "" }),
+                    // If job changed, also unset result data
+                    ...(new_job_id && previousJobRole && new_job_id.toString() !== previousJobRole.toString() ? { result: "", result_document_url: "" } : {})
+                }
             },
             { new: true }
         );

@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 export const ENV = {
-  PORT: process.env.PORT || 5001,
+  PORT: process.env.PORT,
   NODE_ENV: process.env.NODE_ENV,
   MONGO_URI: process.env.MONGO_URI,
   FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,

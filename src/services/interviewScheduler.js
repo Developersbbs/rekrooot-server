@@ -1,6 +1,7 @@
 import { Interview } from "../modals/interview.model.js";
 import { Job } from "../modals/job.model.js";
 import { Candidate } from "../modals/candidate.model.js";
+import { updateJobCandidateCounts } from "./jobService.js";
 
 // Function to update interviews that have ended and move them to review status
 const updateInterviewStatuses = async () => {
@@ -27,12 +28,6 @@ const updateInterviewStatuses = async () => {
 
         console.log(`Found ${endedInterviews.length} interviews to update to review status`);
 
-        // Log details of found interviews
-        endedInterviews.forEach(interview => {
-            const interviewIST = new Date(interview.date_time).toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-            console.log(`Interview ID: ${interview._id}, Candidate: ${interview.candidate_name}, DateTime (IST): ${interviewIST}, Status: ${interview.status}`);
-        });
-
         // Update each interview to status 2 (interview_in_review)
         for (const interview of endedInterviews) {
             // Update interview status
@@ -47,14 +42,9 @@ const updateInterviewStatuses = async () => {
 
             // Update job candidate counts: decrement old status, increment interview_in_review
             if (interview.job_id && interview.candidate_id) {
-                const fieldToDecrement = interview.status === 1 ? 'candidate_counts.rescheduled' : 'candidate_counts.scheduled';
-                await Job.findByIdAndUpdate(interview.job_id._id, {
-                    $inc: {
-                        [fieldToDecrement]: -1,
-                        'candidate_counts.interview_in_review': 1
-                    }
-                });
-                console.log(`Updated job ${interview.job_id._id} candidate counts`);
+                const oldStatusField = interview.status === 1 ? 'rescheduled' : 'scheduled';
+                await updateJobCandidateCounts(interview.job_id._id, oldStatusField, 'interview_in_review');
+                console.log(`Updated job ${interview.job_id._id} candidate counts via jobService`);
             }
         }
 
