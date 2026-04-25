@@ -1,4 +1,5 @@
 import express from "express";
+import { ENV } from "./config/env.js";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -24,7 +25,10 @@ const app = express();
 
 /* core middleware */
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: [ENV.FRONTEND_BASE_URL, "http://localhost:3000", "http://localhost:3012", "https://rekrooot.sbbstest.in"],
+  credentials: true
+}));
 app.use(express.json());
 app.use(morgan("dev"));
 
