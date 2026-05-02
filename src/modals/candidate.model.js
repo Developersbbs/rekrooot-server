@@ -59,47 +59,47 @@ const candidateSchema = new mongoose.Schema({
         ref: 'Interview'
     },
 
-    isMigrated:{
-        type:Boolean,
-        default:false,
-    },
-    
-    migrationHistory :[{
-previous_job_role:{
-    type:mongoose.Schema.Types.ObjectId,
-    ref:'Job',
-    trim:true,
-    },
-    previous_Status:{
-        type:Number,
-        ref:'Interview',
-        trim:true,
-    },
-    previous_Interview:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Interview',
-        trim:true
-    },
-    previous_Client:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Client',
-        trim:true,
-    },
-    previous_Vendor:{
-        type:mongoose.Schema.Types.ObjectId,
-        ref:'Vendor',
-        required:false,
-    },
-    previous_interview_AttendBy:{
-        type:Date,
-        ref:'Interview',
-    },
-        migratedAt: {
-        type: Date,
-        default: Date.now
+    isMigrated: {
+        type: Boolean,
+        default: false,
     },
 
-}],
+    migrationHistory: [{
+        previous_job_role: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Job',
+            trim: true,
+        },
+        previous_Status: {
+            type: Number,
+            ref: 'Interview',
+            trim: true,
+        },
+        previous_Interview: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Interview',
+            trim: true
+        },
+        previous_Client: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Client',
+            trim: true,
+        },
+        previous_Vendor: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Vendor',
+            required: false,
+        },
+        previous_interview_AttendBy: {
+            type: Date,
+            ref: 'Interview',
+        },
+        migratedAt: {
+            type: Date,
+            default: Date.now
+        },
+
+    }],
     status: {
         type: Number,
         default: 0

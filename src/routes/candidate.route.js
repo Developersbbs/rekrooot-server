@@ -116,6 +116,19 @@ router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
             return res.status(404).json({ message: "Candidate not found or unauthorized" });
         }
 
+        // ✅ FALLBACK: If interview_id is missing (e.g. from previous soft-deletes), find it via candidate_id
+        if (!candidate.interview_id) {
+            const lastInterview = await Interview.findOne({ candidate_id: candidate._id })
+                .sort({ created_at: -1 })
+                .populate('interviewer_id', 'name');
+
+            if (lastInterview) {
+                const candidateObj = candidate.toObject();
+                candidateObj.interview_id = lastInterview;
+                return res.json({ candidate: candidateObj });
+            }
+        }
+
         return res.json({ candidate });
     } catch (err) {
         next(err);
@@ -210,6 +223,103 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             return res.status(400).json({ message: "Company ID is required" });
         }
 
+        // ✅ HANDLE DUPLICATE APPLICATION FOR DIFFERENT ROLE
+        const existingCandidate = await Candidate.findOne({
+            email: email.toLowerCase(),
+            company_id: target_company_id,
+            trash: false
+        }).populate('interview_id job_id client_id vendor_id');
+
+        if (existingCandidate && existingCandidate.job_id?._id?.toString() !== job_id?.toString()) {
+            try {
+                const transporter = nodemailer.createTransport({
+                    host: ENV.SMTP_HOST,
+                    port: ENV.SMTP_PORT,
+                    secure: ENV.SMTP_SECURE,
+                    auth: {
+                        user: ENV.INTERVIEW_SMTP_USER,
+                        pass: ENV.INTERVIEW_SMTP_PASS
+                    }
+                });
+
+                const candidateName = existingCandidate.full_name;
+                const oldJobTitle = existingCandidate.job_id?.title || existingCandidate.job_id?.jobTitle || 'the current position';
+                const oldClientName = existingCandidate.client_id?.name || 'our client';
+
+                // Case 1: Waiting for previous role
+                if (existingCandidate.status === 0) {
+                    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Application Update</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#2f4858;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.info-box{background-color:#f0f9ff;border-left:4px solid #2f4858;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Application Update</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>Thank you for your interest in the <strong>${oldJobTitle}</strong> position with <strong>${oldClientName}</strong>.</p><p>We would like to inform you that your application for this specific role has been <strong>declined</strong> as you have recently applied for a different position within our recruitment portal.</p><div class="info-box"><strong>Previous Role:</strong> ${oldJobTitle}<br><strong>Status:</strong> Discontinued in favor of new application</div><p>We will proceed with your most recent application and will keep you updated on its progress.</p><p>If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Recruitment Team</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
+
+                    await transporter.sendMail({
+                        from: ENV.INTERVIEW_MAIL_FROM,
+                        to: email,
+                        subject: `Application Update - ${candidateName} for ${oldJobTitle}`,
+                        html
+                    }).catch(e => console.error("Failed to send decline mail:", e.message));
+                }
+                // Case 2: Scheduled/Rescheduled for previous role
+                else if ([1, 2].includes(existingCandidate.status)) {
+                    if (existingCandidate.interview_id) {
+                        const interview = existingCandidate.interview_id;
+                        if (interview.session_id && interview.presenter_id) {
+                            try {
+                                const tokenUrl = `https://accounts.zoho.in/oauth/v2/token?refresh_token=${ENV.ZOHO_MEET_REFRESH_TOKEN}&client_id=${ENV.ZOHO_MEET_CLIENT_ID}&client_secret=${ENV.ZOHO_MEET_CLIENT_SECRET}&grant_type=refresh_token`;
+                                const tokenResponse = await axios.post(tokenUrl);
+                                const accessToken = tokenResponse.data.access_token;
+                                if (accessToken) {
+                                    const zsoid = interview.zsoid || interview.presenter_id;
+                                    const cancelUrl = `https://meeting.zoho.in/api/v2/${zsoid}/sessions/${interview.session_id}.json`;
+                                    await axios.delete(cancelUrl, { headers: { Authorization: `Zoho-oauthtoken ${accessToken}` } });
+                                }
+                            } catch (e) {
+                                console.warn("Zoho cancellation failed for old application:", e.message);
+                            }
+                        }
+                        // await Interview.findByIdAndUpdate(interview._id, { status: 6 }); // Removed as per request: don't update interview status on soft delete
+                        await InterviewerAvailability.findOneAndUpdate(
+                            {
+                                $or: [
+                                    { interviewer: interview.interviewer_id, start_time: interview.date_time },
+                                    { candidate_id: existingCandidate._id }
+                                ]
+                            },
+                            { status: 1, $unset: { candidate_id: "" } }
+                        ).catch(e => console.error("Failed to free availability for old application:", e));
+                    }
+
+                    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interview Cancelled</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#d32f2f;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.cancel-box{background-color:#fffef0;border-left:4px solid #d32f2f;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Interview Cancelled</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>This is to inform you that your interview for the <strong>${oldJobTitle}</strong> position with <strong>${oldClientName}</strong> has been <strong>cancelled</strong> as you have recently applied for a different position within our recruitment portal.</p><div class="cancel-box"><strong>Position:</strong> ${oldJobTitle}<br><strong>Company:</strong> ${oldClientName}</div><p>We apologize for any inconvenience this may have caused. If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Interview Panel</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
+
+                    await transporter.sendMail({
+                        from: ENV.INTERVIEW_MAIL_FROM,
+                        to: email,
+                        subject: `Interview Cancelled - ${candidateName} for ${oldJobTitle}`,
+                        html
+                    }).catch(e => console.error("Failed to send cancellation mail:", e.message));
+                }
+
+                // Update old job counts
+                let oldStatusField = 'waiting';
+                if (existingCandidate.status === 1) oldStatusField = 'scheduled';
+                else if (existingCandidate.status === 2) oldStatusField = 'rescheduled';
+                else if (existingCandidate.status === 3) oldStatusField = 'interview_in_review';
+                else if (existingCandidate.status === 5) oldStatusField = 'cancelled';
+
+                await Job.findByIdAndUpdate(existingCandidate.job_id?._id, {
+                    $inc: {
+                        [`candidate_counts.${oldStatusField}`]: -1,
+                        'candidate_counts.trash': 1
+                    }
+                }).catch(e => console.error("Failed to update old job counts:", e.message));
+
+                // Move to trash
+                existingCandidate.trash = true;
+                await existingCandidate.save();
+
+            } catch (err) {
+                console.error("Error handling existing candidate during new application:", err.message);
+            }
+        }
+
         const finalStatus = FINAL_STATUS_MAP[status] || null;
         const candidate = await Candidate.create({
             job_id,
@@ -278,6 +388,7 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
 
         let previousInterviewTime = null;
         let previousInterview = null;
+        let previousInterviewStatus = null;
 
         // ✅ STEP 2: Handle existing interview (if any)
         if (candidate.interview_id) {
@@ -286,6 +397,7 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
             if (interview) {
                 previousInterviewTime = interview.date_time;
                 previousInterview = interview._id;
+                previousInterviewStatus = interview.status;
 
                 // ✅ Cancel Zoho Meeting FIRST
                 if (interview.session_id && interview.presenter_id) {
@@ -318,20 +430,20 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
                 });
 
                 // ✅ Free interviewer availability
-                if (previousInterview && previousInterviewTime) {
-                    await InterviewerAvailability.findOneAndUpdate(
-                        {
-                            interviewer: previousInterview,
-                            start_time: previousInterviewTime
-                        },
-                        {
-                            status: 1,
-                            $unset: { candidate_id: "" }
-                        }
-                    ).catch(e =>
-                        console.error("Failed to free availability:", e)
-                    );
-                }
+                await InterviewerAvailability.findOneAndUpdate(
+                    {
+                        $or: [
+                            { interviewer: interview.interviewer_id, start_time: previousInterviewTime },
+                            { candidate_id: candidate._id }
+                        ]
+                    },
+                    {
+                        status: 1,
+                        $unset: { candidate_id: "" }
+                    }
+                ).catch(e =>
+                    console.error("Failed to free availability during migration:", e)
+                );
             }
         }
 
@@ -357,6 +469,19 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
                 let oldStatusField = 'waiting';
                 if (candidate.result) {
                     oldStatusField = RESULT_TO_JOB_FIELD[candidate.result] || 'waiting';
+                } else if (previousInterviewStatus !== null) {
+                    const statusMap = {
+                        0: 'scheduled',
+                        1: 'rescheduled',
+                        2: 'interview_in_review',
+                        3: 'selected',
+                        4: 'rejected',
+                        5: 'no_show',
+                        6: 'cancelled',
+                        7: 'proxy',
+                        8: 'technical_issue'
+                    };
+                    oldStatusField = statusMap[previousInterviewStatus] || 'waiting';
                 } else {
                     if (previousCandidateStatus === 1) oldStatusField = 'scheduled';
                     else if (previousCandidateStatus === 2) oldStatusField = 'rescheduled';
@@ -678,43 +803,76 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
             .populate('client_id', 'name');
         if (!candidate) return res.status(404).json({ message: "Candidate not found or unauthorized" });
 
-        // If candidate has an active/pending interview, cancel it
-        if (candidate.interview_id && [0, 1, 2].includes(candidate.interview_id.status)) {
-            const interview = candidate.interview_id;
+        // Send Emails based on status
+        if (candidate.status === 0) {
+            // Send Declined Email
+            try {
+                const transporter = nodemailer.createTransport({
+                    host: ENV.SMTP_HOST,
+                    port: ENV.SMTP_PORT,
+                    secure: ENV.SMTP_SECURE,
+                    auth: {
+                        user: ENV.NEWUSER_SMTP_USER,
+                        pass: ENV.NEWUSER_SMTP_PASS
+                    }
+                });
 
+                const candidateName = candidate.full_name;
+                const jobTitle = candidate.job_id?.jobTitle || candidate.job_id?.title || "Position";
+                const clientName = candidate.client_id?.name || "Company";
+
+                const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Application Update</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#2f4858;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.info-box{background-color:#f0f9ff;border-left:4px solid #2f4858;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Application Update</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>Thank you for your interest in the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong>.</p><p>We would like to inform you that your application for this position has been <strong>declined</strong> and moved to our archive.</p><div class="info-box"><strong>Role:</strong> ${jobTitle}<br><strong>Status:</strong> Declined</div><p>We appreciate the time you took to apply. If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Recruitment Team</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
+
+                await transporter.sendMail({
+                    from: ENV.NEWUSER_MAIL_FROM,
+                    to: candidate.email,
+                    subject: `Application Update - ${candidateName} for ${jobTitle}`,
+                    html
+                });
+            } catch (mailErr) {
+                console.error("Failed to send decline email from backend:", mailErr.message);
+            }
+        }
+        else if ([1, 2].includes(candidate.status) || (candidate.interview_id && [0, 1, 2].includes(candidate.interview_id.status))) {
+            // Existing cancellation logic (already there, but wrapped for clarity)
+            const interview = candidate.interview_id;
             try {
                 // 1. Get Zoho Token
-                const tokenUrl = `https://accounts.zoho.in/oauth/v2/token?refresh_token=${ENV.ZOHO_MEET_REFRESH_TOKEN}&client_id=${ENV.ZOHO_MEET_CLIENT_ID}&client_secret=${ENV.ZOHO_MEET_CLIENT_SECRET}&grant_type=refresh_token`;
-                const tokenResponse = await axios.post(tokenUrl);
-                const accessToken = tokenResponse.data.access_token;
+                if (interview?.session_id) {
+                    const tokenUrl = `https://accounts.zoho.in/oauth/v2/token?refresh_token=${ENV.ZOHO_MEET_REFRESH_TOKEN}&client_id=${ENV.ZOHO_MEET_CLIENT_ID}&client_secret=${ENV.ZOHO_MEET_CLIENT_SECRET}&grant_type=refresh_token`;
+                    const tokenResponse = await axios.post(tokenUrl);
+                    const accessToken = tokenResponse.data.access_token;
 
-                if (accessToken && interview.session_id) {
-                    const zsoid = interview.zsoid || interview.presenter_id;
-                    const cancelUrl = `https://meeting.zoho.in/api/v2/${zsoid}/sessions/${interview.session_id}.json`;
+                    if (accessToken) {
+                        const zsoid = interview.zsoid || interview.presenter_id;
+                        const cancelUrl = `https://meeting.zoho.in/api/v2/${zsoid}/sessions/${interview.session_id}.json`;
 
-                    await axios.delete(cancelUrl, {
-                        headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
-                    }).catch(e => console.log("Zoho cancel failed or already cancelled:", e.message));
+                        await axios.delete(cancelUrl, {
+                            headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+                        }).catch(e => console.log("Zoho cancel failed or already cancelled:", e.message));
+                    }
                 }
 
-                // 2. Update Interview status (6: cancelled)
-                await Interview.findByIdAndUpdate(interview._id, { status: 6 });
-
-                // 3. Free up interviewer availability
+                // 2. Free up interviewer availability
                 await InterviewerAvailability.findOneAndUpdate(
-                    { interviewer: interview.interviewer_id, start_time: interview.date_time },
+                    {
+                        $or: [
+                            { interviewer: interview?.interviewer_id, start_time: interview?.date_time },
+                            { candidate_id: candidate._id }
+                        ]
+                    },
                     { status: 1, $unset: { candidate_id: "" } }
-                );
+                ).catch(e => console.error("Failed to free availability during delete:", e));
 
-                // 4. Send Cancellation Email to Candidate
+                // 3. Send Cancellation Email to Candidate
                 try {
                     const transporter = nodemailer.createTransport({
                         host: ENV.SMTP_HOST,
                         port: ENV.SMTP_PORT,
                         secure: ENV.SMTP_SECURE,
                         auth: {
-                            user: ENV.INTERVIEW_SMTP_USER,
-                            pass: ENV.INTERVIEW_SMTP_PASS
+                            user: ENV.NEWUSER_SMTP_USER,
+                            pass: ENV.NEWUSER_SMTP_PASS
                         }
                     });
 
@@ -725,7 +883,7 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
                     const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interview Cancelled</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#d32f2f;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.cancel-box{background-color:#fffef0;border-left:4px solid #d32f2f;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Interview Cancelled</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>This is to inform you that your interview for the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong> has been <strong>cancelled</strong> because your profile has been withdrawn or archived.</p><div class="cancel-box"><strong>Position:</strong> ${jobTitle}<br><strong>Company:</strong> ${clientName}</div><p>We apologize for any inconvenience this may have caused. If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Interview Panel</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
 
                     await transporter.sendMail({
-                        from: ENV.INTERVIEW_MAIL_FROM,
+                        from: ENV.NEWUSER_MAIL_FROM,
                         to: candidate.email,
                         subject: `Interview Cancelled - ${candidateName} for ${jobTitle}`,
                         html
@@ -733,10 +891,8 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
                 } catch (mailErr) {
                     console.error("Failed to send cancellation email from backend:", mailErr.message);
                 }
-
             } catch (error) {
                 console.error("Error during automatic interview cancellation:", error.message);
-                // We continue with candidate deletion even if Zoho cancellation fails
             }
         }
         let currentStatus = 'waiting';
@@ -751,7 +907,7 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
         // Move candidate to trash
         await Candidate.findByIdAndUpdate(
             candidate._id,
-            { trash: true, is_active: false, $unset: { interview_id: "" } }
+            { trash: true, is_active: false }
         );
 
         // Update job candidate counts: decrement old status, increment trash
@@ -773,7 +929,14 @@ router.post("/:id/restore", requireAuth, attachUser, async (req, res, next) => {
         }
 
         // Get the candidate before updating to determine their status
-        const candidate = await Candidate.findOne(query).populate('interview_id');
+        const candidate = await Candidate.findOne(query)
+            .populate({
+                path: 'interview_id',
+                populate: { path: 'interviewer_id', select: 'name email' }
+            })
+            .populate('job_id', 'title jobTitle')
+            .populate('client_id', 'name');
+
         if (!candidate) return res.status(404).json({ message: "Candidate not found or unauthorized" });
 
         // Determine what status the candidate should have after restore
@@ -796,7 +959,85 @@ router.post("/:id/restore", requireAuth, attachUser, async (req, res, next) => {
         // Update job candidate counts: decrement trash, increment new status
         await updateJobCandidateCounts(candidate.job_id, 'trash', newStatus);
 
-        return res.json({ message: "Candidate restored successfully", candidate: restoredCandidate });
+        // ✅ HANDLE EMAIL FOR SCHEDULED/RESCHEDULED CANDIDATES
+        if (newStatus === 'scheduled' || newStatus === 'rescheduled') {
+            const interview = candidate.interview_id;
+            if (interview) {
+                try {
+                    // Try to re-book the availability slot
+                    await InterviewerAvailability.findOneAndUpdate(
+                        { interviewer: interview.interviewer_id, start_time: interview.date_time, status: 1 },
+                        { status: 2, candidate_id: candidate._id }
+                    ).catch(e => console.warn("Failed to re-book slot during restore:", e.message));
+
+                    // Send Invitation Email
+                    const transporter = nodemailer.createTransport({
+                        host: ENV.SMTP_HOST,
+                        port: ENV.SMTP_PORT,
+                        secure: ENV.SMTP_SECURE,
+                        auth: {
+                            user: ENV.INTERVIEW_SMTP_USER,
+                            pass: ENV.INTERVIEW_SMTP_PASS
+                        }
+                    });
+
+                    const candidateName = candidate.full_name;
+                    const jobTitle = candidate.job_id?.jobTitle || candidate.job_id?.title || "Position";
+                    const clientName = candidate.client_id?.name || "Company";
+                    const interviewerName = interview.interviewer_id?.name || "Interviewer";
+                    const selectedTimeSlot = new Date(interview.date_time).toLocaleString('en-US', {
+                        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                        hour: 'numeric', minute: '2-digit', hour12: true
+                    });
+                    const link = interview.meeting_link;
+
+                    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interview Invitation</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#2f4858;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.button{text-align:center;margin:20px 0}.button a{background-color:#2f4858;color:#fff;padding:12px 20px;text-decoration:none;border-radius:4px;font-size:16px}.button a:hover{color:#2f4858;background-color:#fb8404}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}ul{margin:10px 0;padding-left:20px}li{margin-bottom:5px}.highlight-box{background-color:#f0f9ff;border-left:4px solid:#2f4858;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Interview Invitation</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>We hope you're doing great! Your application for the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong>.</p><p>We are pleased to confirm that your interview is still <strong>scheduled</strong> for the following time:</p><div class="highlight-box"><strong>Interview Time:</strong> ${selectedTimeSlot}<br><strong>Interviewer:</strong> ${interviewerName}</div>${link ? `<p>Please join the interview using the link below at the scheduled time:</p><div class="button"><a href="${link}" target="_blank">Join Interview</a></div>` : ''}<h2>Interview Guidelines</h2><ul><li>Make sure you have a <strong>laptop with a working camera</strong>.</li><li>Set up in a <strong>well-lit</strong> space for clear visibility.</li><li><strong>Share your desktop</strong> during the interview and avoid external assistance.</li><li>Close all background applications; using <strong>remote connections</strong> or dual monitors is not allowed.</li><li>Ensure you have a <strong>strong internet connection</strong> and a webcam.</li><li>The interview will be <strong>recorded</strong> and will include coding and theoretical questions.</li><li>Please connect using a <strong>laptop or desktop</strong>—handheld devices aren't allowed.</li></ul><p>If you have any questions, feel free to reach out to us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Interview Panel</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
+
+                    await transporter.sendMail({
+                        from: ENV.INTERVIEW_MAIL_FROM,
+                        to: candidate.email,
+                        subject: `Interview Invitation - ${candidateName} for ${jobTitle}`,
+                        html
+                    }).catch(e => console.error("Failed to send restore invitation email:", e.message));
+
+                } catch (err) {
+                    console.error("Error handling interview restore logic:", err.message);
+                }
+            }
+        }
+        // ✅ HANDLE EMAIL FOR WAITING CANDIDATES
+        else if (newStatus === 'waiting') {
+            try {
+                const transporter = nodemailer.createTransport({
+                    host: ENV.SMTP_HOST,
+                    port: ENV.SMTP_PORT,
+                    secure: ENV.SMTP_SECURE,
+                    auth: {
+                        user: ENV.INTERVIEW_SMTP_USER,
+                        pass: ENV.INTERVIEW_SMTP_PASS
+                    }
+                });
+
+                const candidateName = candidate.full_name;
+                const jobTitle = candidate.job_id?.jobTitle || candidate.job_id?.title || "Position";
+                const clientName = candidate.client_id?.name || "Company";
+                const link = `https://rekrooot.com/candidate/interview-slot/${candidate._id}`;
+
+                const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Email Invitation</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#2f4858;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.button{text-align:center;margin:20px 0}.button a{background-color:#2f4858;color:#fff;padding:12px 20px;text-decoration:none;border-radius:4px;font-size:16px}.button a:hover{color:#2f4858;background-color:#fb8404}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}ul{margin:10px 0;padding-left:20px}li{margin-bottom:5px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Interview Invitation</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>We hope you're doing great! Your application for the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong>.</p><p>Please select your preferred interview time slot using the link below to proceed with the next step of the hiring process – <strong>congratulations</strong> on your achievement!</p><div class="button"><a href="${link}" target="_blank">Select Your Interview Timeslot</a></div><h2>Interview Guidelines</h2><ul><li>Make sure you have a <strong>laptop with a working camera</strong>.</li><li>Set up in a <strong>well-lit</strong> space for clear visibility.</li><li><strong>Share your desktop</strong> during the interview and avoid external assistance.</li><li>Close all background applications; using <strong>remote connections</strong> or dual monitors is not allowed.</li><li>Ensure you have a <strong>strong internet connection</strong> and a webcam.</li><li>The interview will be <strong>recorded</strong> and will include coding and theoretical questions.</li><li>Please connect using a <strong>laptop or desktop</strong>—handheld devices aren't allowed.</li></ul><p>If you have any questions or need clarification before the interview, feel free to reach out to us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>We're looking forward to seeing you in the Interview. Best of luck in your preparations!</p><p>Best regards,<br>The Rekrooot Interview Panel</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
+
+                await transporter.sendMail({
+                    from: ENV.INTERVIEW_MAIL_FROM,
+                    to: candidate.email,
+                    subject: `Interview Scheduling - ${candidateName} for ${jobTitle}`,
+                    html
+                }).catch(e => console.error("Failed to send restore scheduling email:", e.message));
+
+            } catch (err) {
+                console.error("Error handling waiting restore logic:", err.message);
+            }
+        }
+
+        return res.json({ message: "Candidate restored successfully and invitation re-sent if applicable", candidate: restoredCandidate });
     } catch (err) {
         next(err);
     }
@@ -822,7 +1063,6 @@ router.delete("/:id/permanent", requireAuth, attachUser, async (req, res, next) 
         next(err);
     }
 });
-
 
 
 export default router;

@@ -1,61 +1,78 @@
+import mongoose from "mongoose";
 import { Interview } from "../modals/interview.model.js";
-import { Job } from "../modals/job.model.js";
 import { Candidate } from "../modals/candidate.model.js";
 import { updateJobCandidateCounts } from "./jobService.js";
 
-// Function to update interviews that have ended and move them to review status
 const updateInterviewStatuses = async () => {
-    try {
-        const now = new Date();
-        const istTime = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-        console.log('Running interview status update scheduler...');
-        console.log('Current time (IST):', istTime);
+  try {
+    console.log("Running interview status update scheduler...");
 
-        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000); // Current time minus 1 hour
-        const bufferTime = new Date(now.getTime() - 10 * 60 * 1000); // 10 minutes ago
+    const now = new Date(); // UTC
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
-        const thresholdIST = oneHourAgo.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-        console.log('Time threshold (1 hour ago IST):', thresholdIST);
+    console.log("UTC now:", now);
+    console.log("UTC threshold (1 hour ago):", oneHourAgo);
 
-        // Find all interviews that have ended (start time + 1 hour <= now) and are still scheduled or rescheduled
-        // AND were created at least 10 minutes ago (to prevent race conditions with newly created past-dated interviews)
-        const endedInterviews = await Interview.find({
-            date_time: { $lte: oneHourAgo },
-            created_at: { $lte: bufferTime },
-            status: { $in: [0, 1] } // scheduled or rescheduled status
-        }).populate('candidate_id', '_id job_id')
-            .populate('job_id', '_id');
+    // Step 1: Get all ended interviews
+    const endedInterviews = await Interview.find({
+      date_time: { $lte: oneHourAgo },
+      status: { $in: [0, 1] } // scheduled or rescheduled
+    }).select("_id candidate_id job_id status");
 
-        console.log(`Found ${endedInterviews.length} interviews to update to review status`);
-
-        // Update each interview to status 2 (interview_in_review)
-        for (const interview of endedInterviews) {
-            // Update interview status
-            await Interview.findByIdAndUpdate(interview._id, { status: 2 });
-            console.log(`Updated interview ${interview._id} to status 2 (interview_in_review)`);
-
-            // Update candidate status to 3 (review)
-            if (interview.candidate_id) {
-                await Candidate.findByIdAndUpdate(interview.candidate_id._id, { status: 3 });
-                console.log(`Updated candidate ${interview.candidate_id._id} to status 3 (review)`);
-            }
-
-            // Update job candidate counts: decrement old status, increment interview_in_review
-            if (interview.job_id && interview.candidate_id) {
-                const oldStatusField = interview.status === 1 ? 'rescheduled' : 'scheduled';
-                await updateJobCandidateCounts(interview.job_id._id, oldStatusField, 'interview_in_review');
-                console.log(`Updated job ${interview.job_id._id} candidate counts via jobService`);
-            }
-        }
-
-        if (endedInterviews.length > 0) {
-            console.log(`Successfully updated ${endedInterviews.length} interviews to review status`);
-        } else {
-            console.log('No interviews found to update');
-        }
-    } catch (error) {
-        console.error('Error updating interview statuses:', error);
+    if (endedInterviews.length === 0) {
+      console.log("No interviews found to update");
+      return;
     }
+
+    console.log(`Found ${endedInterviews.length} interviews to update`);
+
+    const interviewIds = endedInterviews.map(i => i._id);
+    const candidateIds = endedInterviews
+      .filter(i => i.candidate_id)
+      .map(i => i.candidate_id);
+
+    // Step 2: Bulk update interview status → 2 (interview_in_review)
+    await Interview.updateMany(
+      { _id: { $in: interviewIds } },
+      { $set: { status: 2 } }
+    );
+
+    console.log("Updated interviews to status 2 (interview_in_review)");
+
+    // Step 3: Bulk update candidate status → 3 (review)
+    if (candidateIds.length > 0) {
+      await Candidate.updateMany(
+        { _id: { $in: candidateIds } },
+        { $set: { status: 3 } }
+      );
+      console.log("Updated candidates to status 3 (review)");
+    }
+
+    // Step 4: Update job candidate counts properly
+    for (const interview of endedInterviews) {
+      if (interview.job_id && interview.candidate_id) {
+        const oldStatusField =
+          interview.status === 1 ? "rescheduled" : "scheduled";
+
+        await updateJobCandidateCounts(
+          interview.job_id,
+          oldStatusField,
+          "interview_in_review"
+        );
+
+        console.log(
+          `Updated job ${interview.job_id} candidate counts`
+        );
+      }
+    }
+
+    console.log(
+      `Successfully processed ${endedInterviews.length} interviews`
+    );
+
+  } catch (error) {
+    console.error("Error updating interview statuses:", error);
+  }
 };
 
 export { updateInterviewStatuses };
