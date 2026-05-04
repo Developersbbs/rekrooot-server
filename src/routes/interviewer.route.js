@@ -345,20 +345,28 @@ router.get("/:id/interviews", requireAuth, requireSuperAdmin, async (req, res, n
 
 
 
+// Helper function to calculate GCD
+function gcd(a, b) {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
 // GET /:id/timeslots - Fetch and process availability intervals into slots
 router.get("/:id/timeslots", async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { days = 31 } = req.query;
+    const { days = 31, duration = 30 } = req.query;
+
+    // Convert duration to milliseconds (minutes -> ms)
+    const slotDuration = parseInt(duration) * 60 * 1000;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid interviewer id" });
     }
 
-    const today = new Date();
-    const from = new Date(today.setHours(0, 0, 0, 0)).toISOString();
-    const toDate = new Date();
-    toDate.setDate(toDate.getDate() + parseInt(days));
+    // Use local time calculation for proper slot alignment
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
+    const toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + parseInt(days), 0, 0, 0);
     const to = toDate.toISOString();
 
     const availability = await InterviewerAvailability.find({
@@ -368,37 +376,66 @@ router.get("/:id/timeslots", async (req, res, next) => {
       status: 1 // Only available slots
     }).sort({ start_time: 1 });
 
+    console.log(`[timeslots] Request: interviewer=${id}, duration=${duration}ms (${parseInt(duration)}min), days=${days}`);
+    console.log(`[timeslots] Date range: ${from} to ${to}`);
+    console.log(`[timeslots] Found ${availability.length} availability ranges`);
+
     const timeSlots = [];
     const nowLocal = new Date();
 
-    for (const range of availability) {
-      let current = new Date(range.start_time);
-      const end = new Date(range.end_time);
+    // Use the actual duration as the base interval for slot generation
+    const durationMinutes = parseInt(duration);
+    const baseIntervalMinutes = durationMinutes;
+    const baseInterval = baseIntervalMinutes * 60 * 1000;
 
-      while (new Date(current.getTime() + 3600000) <= end) {
-        if (current > nowLocal) {
-          const slotDate = current.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
-          const slotTime12 = current.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    console.log(`[timeslots] Calculated baseInterval: ${baseIntervalMinutes} minutes (${baseInterval}ms)`);
 
-          // Format 24h manually for HH:mm
-          const hh = current.getHours().toString().padStart(2, '0');
-          const mm = current.getMinutes().toString().padStart(2, '0');
-          const slotTime24 = `${hh}:${mm}`;
+    const rangeStart = new Date(from);
+    const rangeEnd = new Date(to);
+    const dayMs = 24 * 60 * 60 * 1000;
 
-          timeSlots.push({
-            date: slotDate,
-            time: slotTime12,
-            time24: slotTime24,
-            duration: '1 hour',
-            iso: current.toISOString()
+    // Generate slots starting from the beginning of each day at the base interval
+    for (let dayMsStart = rangeStart.getTime(); dayMsStart < rangeEnd.getTime(); dayMsStart += dayMs) {
+      for (let ms = dayMsStart; ms < dayMsStart + dayMs; ms += baseInterval) {
+        const slotStart = new Date(ms);
+        const slotEnd = new Date(ms + slotDuration);
+
+          // Skip slots that have already passed
+          if (slotStart <= nowLocal) continue;
+
+          // Check if this candidate slot fits entirely inside any availability range
+          const fits = availability.some(range => {
+            const rangeStart = new Date(range.start_time);
+            const rangeEnd = new Date(range.end_time);
+            return slotStart >= rangeStart && slotEnd <= rangeEnd;
           });
-        }
-        current = new Date(current.getTime() + 3600000);
+
+          if (!fits) continue;
+
+        const slotDate = slotStart.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+        const slotTime12 = slotStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+        const hh = slotStart.getHours().toString().padStart(2, '0');
+        const mm = slotStart.getMinutes().toString().padStart(2, '0');
+        const slotTime24 = `${hh}:${mm}`;
+
+        const endTime = slotEnd;
+        const endTime12 = endTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+        timeSlots.push({
+          date: slotDate,
+          time: slotTime12,
+          time24: slotTime24,
+          endTime: endTime12,
+          duration: `${duration} mins`,
+          iso: slotStart.toISOString()
+        });
       }
     }
 
-    // Sort and filter unique
-    timeSlots.sort((a, b) => new Date(a.iso) - new Date(b.iso));
+    console.log(`[timeslots] Generated ${timeSlots.length} slots`);
+
+    // Already sorted by the loop; just filter unique
     const uniqueSlots = timeSlots.filter((slot, index, self) =>
       index === self.findIndex((t) => (
         t.date === slot.date && t.time24 === slot.time24
