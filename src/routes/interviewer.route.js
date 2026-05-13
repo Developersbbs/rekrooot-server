@@ -5,6 +5,8 @@ import { User } from "../modals/user.model.js";
 import Interviewer from "../modals/interviewer.model.js";
 import { Interview } from "../modals/interview.model.js";
 import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
+import { sendInterviewerWelcomeEmail } from "../services/mailer.js";
+import { ENV } from "../config/env.js";
 
 const router = Router();
 
@@ -74,7 +76,20 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
     }
 
     const interviewer = await Interviewer.create(payload);
-    return res.status(201).json({ interviewer });
+
+    // Send welcome email with signup link
+    const signupUrl = `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/interviewer/signup`;
+    let mail_sent = false;
+    let mail_error = null;
+    try {
+      await sendInterviewerWelcomeEmail({ to: payload.email, name: payload.name, signupUrl });
+      mail_sent = true;
+    } catch (mailErr) {
+      mail_error = mailErr instanceof Error ? mailErr.message : "Failed to send email";
+      console.error("[interviewer] Failed to send welcome email", { to: payload.email, error: mail_error });
+    }
+
+    return res.status(201).json({ interviewer, mail_sent, mail_error });
   } catch (err) {
     if (err?.code === 11000) {
       const key = err?.keyPattern ? Object.keys(err.keyPattern)[0] : undefined;
@@ -181,6 +196,143 @@ router.get("/all-interviews", requireAuth, async (req, res, next) => {
 
     const interviews = await Interview.find(query)
       .populate("interviewer_id", "name email")
+      .sort({ date_time: -1 });
+
+    return res.json({ interviews });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /signup - Interviewer signup (provision User record if email exists in Interviewer collection)
+router.post("/signup", requireAuth, async (req, res, next) => {
+  try {
+    const { name, contact } = req.body;
+    const { uid, email } = req.auth;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const emailNormalized = email.toLowerCase().trim();
+
+    // 1. Check if interviewer exists
+    const interviewer = await Interviewer.findOne({ email: emailNormalized });
+    if (!interviewer) {
+      return res.status(403).json({ message: "Your email is not authorized as an interviewer. Please contact your administrator." });
+    }
+
+    // 2. Check if user already provisioned
+    let user = await User.findOne({ 
+      $or: [
+        { email: emailNormalized },
+        { firebase_uid: uid }
+      ]
+    });
+
+    if (user) {
+      if (!user.firebase_uid) {
+        user.firebase_uid = uid;
+        await user.save();
+      }
+      return res.status(200).json({ user });
+    }
+
+    // 3. Provision new user with role 4 (Interviewer)
+    user = await User.create({
+      username: name || interviewer.name,
+      email: emailNormalized,
+      contact: contact || interviewer.contact,
+      firebase_uid: uid,
+      company_id: interviewer.company_id,
+      role: 4, // Interviewer
+      is_active: true
+    });
+
+    return res.status(201).json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /me/scheduled - Fetch scheduled and rescheduled interviews for the logged-in interviewer
+router.get("/me/scheduled", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const interviews = await Interview.find({
+      interviewer_id: interviewer._id,
+      status: { $in: [0, 1] } // 0: scheduled, 1: rescheduled
+    })
+    .populate("candidate_id", "full_name email primary_contact")
+    .populate("job_id", "title")
+    .sort({ date_time: 1 });
+
+    return res.json({ interviews });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /me/stats - Summary counts for the logged-in interviewer
+router.get("/me/stats", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const all = await Interview.find({ interviewer_id: interviewer._id });
+    const now = new Date();
+
+    const stats = {
+      total: all.length,
+      upcoming: all.filter(i => (i.status === 0 || i.status === 1) && new Date(i.date_time) >= now).length,
+      in_review: all.filter(i => i.status === 2).length,
+      selected: all.filter(i => i.status === 3).length,
+      rejected: all.filter(i => i.status === 4).length,
+      no_show: all.filter(i => i.status === 5).length,
+      cancelled: all.filter(i => i.status === 6).length,
+    };
+
+    return res.json({ stats });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /me/all - All interviews for the logged-in interviewer (for reports)
+router.get("/me/all", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const interviews = await Interview.find({ interviewer_id: interviewer._id })
+      .populate("candidate_id", "full_name email primary_contact")
+      .populate("job_id", "title")
       .sort({ date_time: -1 });
 
     return res.json({ interviews });
@@ -356,71 +508,75 @@ router.get("/:id/timeslots", async (req, res, next) => {
     const { id } = req.params;
     const { days = 31, duration = 30 } = req.query;
 
-    // Convert duration to milliseconds (minutes -> ms)
     const slotDuration = parseInt(duration) * 60 * 1000;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid interviewer id" });
     }
 
-    // Use local time calculation for proper slot alignment
     const now = new Date();
     const from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
     const toDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + parseInt(days), 0, 0, 0);
     const to = toDate.toISOString();
 
-    const availability = await InterviewerAvailability.find({
-      interviewer: id,
-      start_time: { $lt: to },
-      end_time: { $gt: from },
-      status: 1 // Only available slots
-    }).sort({ start_time: 1 });
+    // Fetch available ranges and already-booked interviews in parallel
+    const [availability, bookedInterviews] = await Promise.all([
+      InterviewerAvailability.find({
+        interviewer: id,
+        start_time: { $lt: to },
+        end_time: { $gt: from },
+        status: 1,
+      }).sort({ start_time: 1 }),
 
-    console.log(`[timeslots] Request: interviewer=${id}, duration=${duration}ms (${parseInt(duration)}min), days=${days}`);
-    console.log(`[timeslots] Date range: ${from} to ${to}`);
-    console.log(`[timeslots] Found ${availability.length} availability ranges`);
+      // Interviews with status 0 (scheduled) or 1 (rescheduled) block their time slot
+      Interview.find({
+        interviewer_id: id,
+        status: { $in: [0, 1] },
+        date_time: { $gte: new Date(from), $lt: new Date(to) },
+      }).select("date_time"),
+    ]);
+
+    // Build a set of booked start-times (ms) for O(1) lookup
+    const bookedMs = new Set(
+      bookedInterviews.map((i) => new Date(i.date_time).getTime())
+    );
 
     const timeSlots = [];
     const nowLocal = new Date();
-
-    // Use the actual duration as the base interval for slot generation
-    const durationMinutes = parseInt(duration);
-    const baseIntervalMinutes = durationMinutes;
-    const baseInterval = baseIntervalMinutes * 60 * 1000;
-
-    console.log(`[timeslots] Calculated baseInterval: ${baseIntervalMinutes} minutes (${baseInterval}ms)`);
-
+    const baseInterval = parseInt(duration) * 60 * 1000;
     const rangeStart = new Date(from);
     const rangeEnd = new Date(to);
     const dayMs = 24 * 60 * 60 * 1000;
 
-    // Generate slots starting from the beginning of each day at the base interval
     for (let dayMsStart = rangeStart.getTime(); dayMsStart < rangeEnd.getTime(); dayMsStart += dayMs) {
       for (let ms = dayMsStart; ms < dayMsStart + dayMs; ms += baseInterval) {
         const slotStart = new Date(ms);
         const slotEnd = new Date(ms + slotDuration);
 
-          // Skip slots that have already passed
-          if (slotStart <= nowLocal) continue;
+        if (slotStart <= nowLocal) continue;
 
-          // Check if this candidate slot fits entirely inside any availability range
-          const fits = availability.some(range => {
-            const rangeStart = new Date(range.start_time);
-            const rangeEnd = new Date(range.end_time);
-            return slotStart >= rangeStart && slotEnd <= rangeEnd;
-          });
+        // Must fit inside an available range
+        const fits = availability.some((range) => {
+          const rs = new Date(range.start_time);
+          const re = new Date(range.end_time);
+          return slotStart >= rs && slotEnd <= re;
+        });
+        if (!fits) continue;
 
-          if (!fits) continue;
+        // Must not overlap with any booked interview (scheduled or rescheduled)
+        const isBooked = bookedInterviews.some((i) => {
+          const iStart = new Date(i.date_time).getTime();
+          const iEnd = iStart + slotDuration;
+          return ms < iEnd && ms + slotDuration > iStart;
+        });
+        if (isBooked) continue;
 
-        const slotDate = slotStart.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
-        const slotTime12 = slotStart.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-
-        const hh = slotStart.getHours().toString().padStart(2, '0');
-        const mm = slotStart.getMinutes().toString().padStart(2, '0');
+        const slotDate = slotStart.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
+        const slotTime12 = slotStart.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+        const hh = slotStart.getHours().toString().padStart(2, "0");
+        const mm = slotStart.getMinutes().toString().padStart(2, "0");
         const slotTime24 = `${hh}:${mm}`;
-
-        const endTime = slotEnd;
-        const endTime12 = endTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        const endTime12 = slotEnd.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
 
         timeSlots.push({
           date: slotDate,
@@ -428,18 +584,13 @@ router.get("/:id/timeslots", async (req, res, next) => {
           time24: slotTime24,
           endTime: endTime12,
           duration: `${duration} mins`,
-          iso: slotStart.toISOString()
+          iso: slotStart.toISOString(),
         });
       }
     }
 
-    console.log(`[timeslots] Generated ${timeSlots.length} slots`);
-
-    // Already sorted by the loop; just filter unique
     const uniqueSlots = timeSlots.filter((slot, index, self) =>
-      index === self.findIndex((t) => (
-        t.date === slot.date && t.time24 === slot.time24
-      ))
+      index === self.findIndex((t) => t.date === slot.date && t.time24 === slot.time24)
     );
 
     return res.json({ success: true, timeSlots: uniqueSlots });
@@ -449,3 +600,4 @@ router.get("/:id/timeslots", async (req, res, next) => {
 });
 
 export default router;
+

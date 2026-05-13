@@ -69,3 +69,29 @@ export async function sendInvitationEmail({
 
   return { messageId: info.messageId };
 }
+
+export async function sendInterviewerWelcomeEmail({ to, name, signupUrl }) {
+  const transporter = getTransporter();
+  if (!transporter) {
+    const missing = getMissingSmtpKeys();
+    throw new Error(
+      missing.length
+        ? `SMTP is not configured (missing: ${missing.join(", ")})`
+        : "SMTP is not configured",
+    );
+  }
+
+  const subject = "You've been added as an Interviewer on Rekrooot";
+  const text = `Hi ${name},\n\nYou have been added as an interviewer on Rekrooot.\n\nPlease create your account using the link below:\n${signupUrl}\n\nBest regards,\nThe Rekrooot Team`;
+  const html = `<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Interviewer Welcome</title><style>body{font-family:Arial,sans-serif;margin:0;padding:20px;background-color:#f4f4f4}.container{background-color:#fff;padding:30px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1);max-width:600px;margin:0 auto}.header{text-align:center;margin-bottom:24px}.header h1{color:#2f4858;margin:0}.badge{display:inline-block;background:#fb8404;color:#fff;padding:4px 12px;border-radius:20px;font-size:13px;font-weight:600;margin-bottom:16px}.button{margin:24px 0;text-align:center}.button a{background-color:#fb8404;color:#fff;padding:14px 28px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block}.button a:hover{background-color:#2f4858}.footer{margin-top:24px;font-size:12px;color:#9ca3af;text-align:center}</style></head><body><div class='container'><div class='header'><div class='badge'>Interviewer Access</div><h1>Welcome to Rekrooot!</h1></div><p>Hi <strong>${name}</strong>,</p><p>You have been added as an <strong>Interviewer</strong> on the Rekrooot platform. To get started, please create your account by clicking the button below:</p><div class='button'><a href='${signupUrl}'>Create Your Account</a></div><p>Once your account is set up, you'll be able to view your scheduled interviews and candidate details from your personal dashboard.</p><p>If you have any questions, feel free to contact your administrator.</p><p>Best regards,<br><strong>The Rekrooot Team</strong></p><div class='footer'>Powered by Rekrooot Recruitment Platform</div></div></body></html>`;
+
+  const info = await transporter.sendMail({
+    from: ENV.NEWUSER_MAIL_FROM,
+    to,
+    subject,
+    text,
+    html,
+  });
+
+  return { messageId: info.messageId };
+}
