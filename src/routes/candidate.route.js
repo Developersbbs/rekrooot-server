@@ -5,6 +5,7 @@ import { Candidate } from "../modals/candidate.model.js";
 import { Job } from "../modals/job.model.js";
 import { Interview } from "../modals/interview.model.js";
 import InterviewerAvailability from "../modals/interviewerAvailability.model.js";
+import Interviewer from "../modals/interviewer.model.js";
 import axios from "axios";
 import nodemailer from "nodemailer";
 import { ENV } from "../config/env.js";
@@ -14,6 +15,162 @@ import { extractTextFromFile, parseResumeText } from "../services/resumeParser.j
 import { updateJobCandidateCounts } from "../services/jobService.js";
 
 const router = Router();
+
+async function sendSkillMatchEmail(candidate, jobId) {
+    try {
+        const job = await Job.findById(jobId).populate('technologies', 'name');
+        if (!job) {
+            console.warn("sendSkillMatchEmail: job not found", jobId);
+            return;
+        }
+
+        const jobTitle = job.title || 'the position';
+        const candidateName = candidate.full_name;
+        const bookingUrl = `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}`;
+
+        const slotDuration = 30;
+        const slotMs = slotDuration * 60 * 1000;
+        const now = new Date();
+        const rangeEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+        // Step 1: Try skill-matched interviewers first
+        let interviewersToShow = [];
+        let isSkillMatch = false;
+
+        if (job.technologies?.length) {
+            const jobTechIds = job.technologies.map(t => t._id.toString());
+            interviewersToShow = await Interviewer.find({
+                technologies: { $in: jobTechIds }
+            }).populate('technologies', 'name').lean();
+            if (interviewersToShow.length) isSkillMatch = true;
+        }
+
+        // Fallback: no skill match → show up to 3 interviewers who have available slots
+        if (!interviewersToShow.length) {
+            const availableInterviewerIds = await InterviewerAvailability.find({
+                start_time: { $lt: rangeEnd },
+                end_time: { $gt: now },
+                status: 1,
+            }).distinct('interviewer');
+
+            if (availableInterviewerIds.length) {
+                interviewersToShow = await Interviewer
+                    .find({ _id: { $in: availableInterviewerIds } })
+                    .populate('technologies', 'name')
+                    .limit(3)
+                    .lean();
+            }
+        }
+
+        const previews = await Promise.all(
+            interviewersToShow.map(async (interviewer) => {
+                const [availability, bookedInterviews] = await Promise.all([
+                    InterviewerAvailability.find({
+                        interviewer: interviewer._id,
+                        start_time: { $lt: rangeEnd },
+                        end_time: { $gt: now },
+                        status: 1,
+                    }).sort({ start_time: 1 }).lean(),
+                    Interview.find({
+                        interviewer_id: interviewer._id,
+                        status: { $in: [0, 1] },
+                        date_time: { $gte: now, $lt: rangeEnd },
+                    }).select('date_time').lean(),
+                ]);
+
+                const slots = [];
+                for (const range of availability) {
+                    const rs = new Date(range.start_time).getTime();
+                    const re = new Date(range.end_time).getTime();
+                    for (let ms = Math.max(rs, now.getTime()); ms + slotMs <= re && slots.length < 3; ms += slotMs) {
+                        const slotEnd = ms + slotMs;
+                        const overlaps = bookedInterviews.some(i => {
+                            const iStart = new Date(i.date_time).getTime();
+                            return ms < iStart + slotMs && slotEnd > iStart;
+                        });
+                        if (!overlaps) {
+                            const d = new Date(ms);
+                            slots.push(
+                                d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
+                                ' at ' +
+                                d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+                            );
+                        }
+                    }
+                    if (slots.length >= 3) break;
+                }
+                return { interviewer, slots };
+            })
+        );
+
+        // Step 3: Build email body — show interviewers with slots first, then rest without
+        const withSlots = previews.filter(p => p.slots.length > 0);
+        const displayList = withSlots.length ? withSlots : previews;
+
+        const interviewerRows = displayList.map(({ interviewer, slots }) => {
+            const techList = interviewer.technologies?.map(t => t.name).join(', ') || 'General';
+            const slotSection = slots.length
+                ? `<p style="margin:6px 0 4px;font-size:13px;font-weight:500;color:#374151;">Available slots:</p>
+                   <ul style="margin:0;padding-left:18px;font-size:13px;">
+                     ${slots.map(s => `<li style="margin:4px 0;color:#374151;">${s}</li>`).join('')}
+                   </ul>`
+                : `<p style="margin:6px 0 0;font-size:12px;color:#9ca3af;font-style:italic;">Slots will be visible on the booking page</p>`;
+            return `
+                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;">
+                    <p style="margin:0 0 4px;font-weight:600;color:#111827;">${interviewer.name}</p>
+                    <p style="margin:0 0 4px;font-size:13px;color:#6b7280;">Skills: ${techList}</p>
+                    ${slotSection}
+                </div>`;
+        }).join('');
+
+        const interviewerSection = displayList.length
+            ? `<p>${isSkillMatch
+                ? 'We have matched you with the following interviewers based on your skills:'
+                : 'Here are some available interviewers for the <strong>' + jobTitle + '</strong> role:'
+              }</p>${interviewerRows}`
+            : `<p>Our team will review your profile and assign a suitable interviewer shortly.</p>`;
+
+        const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book Your Interview</title></head>
+<body style="font-family:Arial,sans-serif;margin:0;padding:0;background:#f4f4f4;">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1);overflow:hidden;">
+  <div style="background:#2f4858;padding:24px;text-align:center;">
+    <img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="Rekrooot">
+    <h1 style="color:#fff;margin:12px 0 0;font-size:22px;">Book Your Interview Slot</h1>
+  </div>
+  <div style="padding:24px;color:#333;">
+    <h2 style="color:#111827;">Hi <strong>${candidateName}</strong>,</h2>
+    <p>Thank you for applying for the <strong>${jobTitle}</strong> position.</p>
+    ${interviewerSection}
+    <p style="margin-top:20px;">Click the button below to view all available slots and book your interview at a time that works for you.</p>
+    <div style="text-align:center;margin:28px 0;">
+      <a href="${bookingUrl}" style="background:#fb8404;color:#fff;padding:14px 32px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block;">Book Your Interview Slot</a>
+    </div>
+    <p style="font-size:13px;color:#6b7280;">If you have any questions, contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p>
+    <p>Best regards,<br><strong>The Rekrooot Recruitment Team</strong></p>
+  </div>
+  <div style="text-align:center;color:#9ca3af;font-size:12px;padding:16px;">© 2026 <a href="#">Rekrooot</a> | All rights reserved.</div>
+</div>
+</body></html>`;
+
+        const transporter = nodemailer.createTransport({
+            host: ENV.SMTP_HOST,
+            port: ENV.SMTP_PORT,
+            secure: ENV.SMTP_SECURE,
+            auth: { user: ENV.INTERVIEW_SMTP_USER, pass: ENV.INTERVIEW_SMTP_PASS },
+        });
+
+        await transporter.sendMail({
+            from: ENV.INTERVIEW_MAIL_FROM,
+            to: candidate.email,
+            subject: `Book Your Interview Slot – ${jobTitle}`,
+            html,
+        });
+
+        console.log(`Skill-match email sent to ${candidate.email} for job: ${jobTitle}`);
+    } catch (err) {
+        console.error("sendSkillMatchEmail error:", err.message);
+    }
+}
 
 router.get("/", requireAuth, attachUser, async (req, res, next) => {
     try {
@@ -358,6 +515,13 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             await candidate.save();
             await Job.findByIdAndUpdate(job_id, jobUpdate)  // ✅ jobUpdate passed here
                 .catch(e => console.error("Failed to update job counts:", e));
+        }
+
+        // If no slot was assigned, email candidate with skill-matched interviewers + booking link
+        if (!interview_id && candidate.email && job_id) {
+            sendSkillMatchEmail(candidate, job_id).catch(e =>
+                console.error("Skill-match email failed:", e.message)
+            );
         }
 
         console.log("Created Candidate:", candidate);

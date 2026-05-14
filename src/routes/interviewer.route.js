@@ -119,38 +119,57 @@ router.get("/public/list", async (req, res, next) => {
   try {
     const interviewers = await Interviewer.find().select("name email zoho_meet_uid technologies").populate("technologies", "name").lean();
 
-    // Fetch availabilities
     const now = new Date();
-    now.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000);
+    const slotDuration = 30 * 60 * 1000; // 30 minutes in ms
 
-    const availabilities = await InterviewerAvailability.find({
-      start_time: { $gte: now },
-      status: 1 // Only available slots
-    }).lean();
+    // Fetch available ranges and already-booked interviews in one go
+    const [availabilities, bookedInterviews] = await Promise.all([
+      InterviewerAvailability.find({
+        start_time: { $lt: rangeEnd },
+        end_time: { $gt: now },
+        status: 1,
+      }).lean(),
+      Interview.find({
+        status: { $in: [0, 1] },
+        date_time: { $gte: now, $lt: rangeEnd },
+      }).select("interviewer_id date_time").lean(),
+    ]);
 
-    // Map availabilities
-    const slotsMap = {};
-    availabilities.forEach(slot => {
-      const intId = slot.interviewer.toString();
-      if (!slotsMap[intId]) slotsMap[intId] = {};
-
-      const date = new Date(slot.start_time);
-      const dateStr = date.toDateString();
-
-      const hours = date.getHours().toString().padStart(2, '0');
-      const minutes = date.getMinutes().toString().padStart(2, '0');
-      const timeStr = `${hours}:${minutes}`;
-
-      if (!slotsMap[intId][dateStr]) {
-        slotsMap[intId][dateStr] = {};
-      }
-
-      // If status is 2 (booked), store the candidate_id string, else store 'available'
-      // Since we filtered for status 1, it should always be available.
-      slotsMap[intId][dateStr][timeStr] = 'available';
+    // Build a per-interviewer set of booked start-times (ms) for O(1) lookup
+    const bookedByInterviewer = {};
+    bookedInterviews.forEach(iv => {
+      const id = iv.interviewer_id.toString();
+      if (!bookedByInterviewer[id]) bookedByInterviewer[id] = new Set();
+      bookedByInterviewer[id].add(new Date(iv.date_time).getTime());
     });
 
-    // Add slots to interviewers
+    // Expand each availability range into individual 30-min slots
+    const slotsMap = {};
+    availabilities.forEach(range => {
+      const intId = range.interviewer.toString();
+      if (!slotsMap[intId]) slotsMap[intId] = {};
+
+      const booked = bookedByInterviewer[intId] || new Set();
+      const rs = new Date(range.start_time).getTime();
+      const re = new Date(range.end_time).getTime();
+
+      for (let ms = Math.max(rs, now.getTime()); ms + slotDuration <= re; ms += slotDuration) {
+        // Skip if any booked interview overlaps this slot
+        const overlaps = [...booked].some(iStart => ms < iStart + slotDuration && ms + slotDuration > iStart);
+        if (overlaps) continue;
+
+        const slotDate = new Date(ms);
+        const dateStr = slotDate.toDateString();
+        const hours = slotDate.getHours().toString().padStart(2, '0');
+        const minutes = slotDate.getMinutes().toString().padStart(2, '0');
+        const timeStr = `${hours}:${minutes}`;
+
+        if (!slotsMap[intId][dateStr]) slotsMap[intId][dateStr] = {};
+        slotsMap[intId][dateStr][timeStr] = 'available';
+      }
+    });
+
     interviewers.forEach(int => {
       int.availability_slots = slotsMap[int._id.toString()] || {};
     });
