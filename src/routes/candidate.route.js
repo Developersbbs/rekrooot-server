@@ -371,7 +371,8 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             resumes,
             supporting_documents,
             company_id,
-            interview_id
+            interview_id,
+            skip_invitation_email
         } = req.body;
 
         const target_company_id = req.user.role === 0 ? company_id : req.user.company_id;
@@ -517,8 +518,8 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
                 .catch(e => console.error("Failed to update job counts:", e));
         }
 
-        // If no slot was assigned, email candidate with skill-matched interviewers + booking link
-        if (!interview_id && candidate.email && job_id) {
+        // If no slot was assigned AND recruiter hasn't taken over email, send candidate booking link
+        if (!interview_id && !skip_invitation_email && candidate.email && job_id) {
             sendSkillMatchEmail(candidate, job_id).catch(e =>
                 console.error("Skill-match email failed:", e.message)
             );
@@ -727,7 +728,7 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
 router.post("/:id/confirm-slot", async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { interviewDate, interviewTime, interviewerId, meetingLink, sessionId, presenterId, zsoid } = req.body;
+        const { interviewDate, interviewTime, interviewerId, meetingLink, sessionId, presenterId, zsoid, startTimeIso } = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid candidate ID" });
@@ -773,8 +774,11 @@ router.post("/:id/confirm-slot", async (req, res, next) => {
                 status: isReschedule ? 1 : 0 // 0: scheduled, 1: rescheduled for Interview
             };
 
-            // Calculate date_time if provided
-            if (interviewDate && interviewTime) {
+            // Prefer startTimeIso (UTC ISO string from client) to avoid server-side timezone parse issues.
+            // Fall back to reconstructing from interviewDate + interviewTime for backwards compatibility.
+            if (startTimeIso) {
+                interviewUpdate.date_time = new Date(startTimeIso);
+            } else if (interviewDate && interviewTime) {
                 try {
                     const [timePart, periodPart] = interviewTime.split(' ');
                     if (timePart) {
@@ -815,22 +819,26 @@ router.post("/:id/confirm-slot", async (req, res, next) => {
             }
         }
 
-        // Update Interviewer availability
-        if (interviewDate && interviewTime && interviewerId) {
+        // Update Interviewer availability — use startTimeIso if available for exact match
+        if (interviewerId && (startTimeIso || (interviewDate && interviewTime))) {
             try {
-                // Determine time slot key (e.g., "12:00" or "09:00")
-                const [timePart, periodPart] = interviewTime.split(' ');
-                let [hourStr, minuteStr] = timePart.split(':');
-                let hour = parseInt(hourStr);
+                let slotDate;
 
-                if (periodPart === 'PM' && hour !== 12) hour += 12;
-                else if (periodPart === 'AM' && hour === 12) hour = 0;
+                if (startTimeIso) {
+                    // Use the ISO timestamp directly — guaranteed correct UTC time
+                    slotDate = new Date(startTimeIso);
+                } else {
+                    // Legacy: reconstruct from locale-formatted strings
+                    const [timePart, periodPart] = interviewTime.split(' ');
+                    let [hourStr, minuteStr] = timePart.split(':');
+                    let hour = parseInt(hourStr);
 
-                const timeSlotKey = `${hour.toString().padStart(2, '0')}:${minuteStr}`;
+                    if (periodPart === 'PM' && hour !== 12) hour += 12;
+                    else if (periodPart === 'AM' && hour === 12) hour = 0;
 
-                // Construct Date object to match InterviewerAvailability records
-                const slotDate = new Date(interviewDate);
-                slotDate.setHours(hour, parseInt(minuteStr), 0, 0);
+                    slotDate = new Date(interviewDate);
+                    slotDate.setHours(hour, parseInt(minuteStr), 0, 0);
+                }
 
                 await InterviewerAvailability.findOneAndUpdate(
                     {

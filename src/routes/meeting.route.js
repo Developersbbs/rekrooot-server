@@ -119,7 +119,9 @@ router.post("/create", async (req, res, next) => {
                 candidate_id: candidateId,
                 candidate_name: candidate?.full_name || "N/A",
                 candidate_email: candidate?.email || "N/A",
-                date_time: new Date(startTime),
+                // Prefer startTimeIso (raw UTC ISO string from client) to avoid timezone parse issues.
+                // Fallback to parsing startTime for backwards compatibility.
+                date_time: req.body.startTimeIso ? new Date(req.body.startTimeIso) : new Date(startTime),
                 interviewer_name: interviewer?.name || "N/A",
                 meeting_link: meetingLink,
                 session_id: sessionId,
