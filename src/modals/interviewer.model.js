@@ -15,6 +15,10 @@ const interviewerSchema = new Schema(
       lowercase: true,
       trim: true,
     },
+    signup_token: {
+      type: String,
+      trim: true,
+    },
     contact: {
       type: String,
       trim: true,

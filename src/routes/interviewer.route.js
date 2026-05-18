@@ -1,5 +1,6 @@
 import { Router } from "express";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import Interviewer from "../modals/interviewer.model.js";
@@ -75,10 +76,12 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
       }
     }
 
+    payload.signup_token = crypto.randomBytes(32).toString("hex");
+
     const interviewer = await Interviewer.create(payload);
 
-    // Send welcome email with signup link
-    const signupUrl = `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/interviewer/signup`;
+    // Send welcome email with signup link (token locks email on signup page)
+    const signupUrl = `${ENV.FRONTEND_BASE_URL.replace(/\/$/, "")}/interviewer/signup?token=${payload.signup_token}`;
     let mail_sent = false;
     let mail_error = null;
     try {
@@ -144,30 +147,45 @@ router.get("/public/list", async (req, res, next) => {
       bookedByInterviewer[id].add(new Date(iv.date_time).getTime());
     });
 
-    // Expand each availability range into individual 30-min slots
-    const slotsMap = {};
+    // Merge ranges per interviewer, then expand into 30-min ISO-keyed slots.
+    // Using ISO keys lets the browser render times in the user's local timezone
+    // regardless of what timezone the server runs in.
+    const mergedByInterviewer = {};
     availabilities.forEach(range => {
       const intId = range.interviewer.toString();
-      if (!slotsMap[intId]) slotsMap[intId] = {};
+      if (!mergedByInterviewer[intId]) mergedByInterviewer[intId] = [];
+      mergedByInterviewer[intId].push({
+        start: new Date(range.start_time).getTime(),
+        end: new Date(range.end_time).getTime(),
+      });
+    });
 
+    const slotsMap = {};
+    const nowMs = now.getTime();
+
+    Object.entries(mergedByInterviewer).forEach(([intId, ranges]) => {
+      slotsMap[intId] = {};
       const booked = bookedByInterviewer[intId] || new Set();
-      const rs = new Date(range.start_time).getTime();
-      const re = new Date(range.end_time).getTime();
 
-      for (let ms = Math.max(rs, now.getTime()); ms + slotDuration <= re; ms += slotDuration) {
-        // Skip if any booked interview overlaps this slot
-        const overlaps = [...booked].some(iStart => ms < iStart + slotDuration && ms + slotDuration > iStart);
-        if (overlaps) continue;
-
-        const slotDate = new Date(ms);
-        const dateStr = slotDate.toDateString();
-        const hours = slotDate.getHours().toString().padStart(2, '0');
-        const minutes = slotDate.getMinutes().toString().padStart(2, '0');
-        const timeStr = `${hours}:${minutes}`;
-
-        if (!slotsMap[intId][dateStr]) slotsMap[intId][dateStr] = {};
-        slotsMap[intId][dateStr][timeStr] = 'available';
+      // Merge overlapping/adjacent ranges
+      const merged = [];
+      for (const r of ranges.sort((a, b) => a.start - b.start)) {
+        const last = merged[merged.length - 1];
+        if (last && r.start <= last.end) {
+          last.end = Math.max(last.end, r.end);
+        } else {
+          merged.push({ ...r });
+        }
       }
+
+      merged.forEach(({ start, end }) => {
+        for (let ms = Math.max(start, nowMs); ms + slotDuration <= end; ms += slotDuration) {
+          const overlaps = [...booked].some(iStart => ms < iStart + slotDuration && ms + slotDuration > iStart);
+          if (overlaps) continue;
+          // ISO key — the client converts to its local timezone for display
+          slotsMap[intId][new Date(ms).toISOString()] = 'available';
+        }
+      });
     });
 
     interviewers.forEach(int => {
@@ -220,6 +238,23 @@ router.get("/all-interviews", requireAuth, async (req, res, next) => {
     return res.json({ interviews });
   } catch (err) {
     next(err);
+  }
+});
+
+// GET /by-token/:token - Resolve signup token to email (public, no auth)
+router.get("/by-token/:token", async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    if (!token || typeof token !== "string") {
+      return res.status(400).json({ message: "Invalid token" });
+    }
+    const interviewer = await Interviewer.findOne({ signup_token: token }).select("email").lean();
+    if (!interviewer) {
+      return res.status(404).json({ message: "Invalid or expired signup link" });
+    }
+    return res.json({ email: interviewer.email });
+  } catch (err) {
+    return next(err);
   }
 });
 
@@ -555,61 +590,58 @@ router.get("/:id/timeslots", async (req, res, next) => {
       }).select("date_time"),
     ]);
 
-    // Build a set of booked start-times (ms) for O(1) lookup
-    const bookedMs = new Set(
-      bookedInterviews.map((i) => new Date(i.date_time).getTime())
-    );
-
     const timeSlots = [];
-    const nowLocal = new Date();
+    const nowMs = Date.now();
     const baseInterval = parseInt(duration) * 60 * 1000;
     const rangeStart = new Date(from);
     const rangeEnd = new Date(to);
     const dayMs = 24 * 60 * 60 * 1000;
 
+    // Merge adjacent/overlapping availability intervals so that slots spanning
+    // multiple stored records (e.g., consecutive 30-min DB entries) still match
+    // when a longer duration is requested.
+    const mergedRanges = [];
+    for (const range of availability) {
+      const rs = new Date(range.start_time).getTime();
+      const re = new Date(range.end_time).getTime();
+      const last = mergedRanges[mergedRanges.length - 1];
+      if (last && rs <= last.end) {
+        last.end = Math.max(last.end, re);
+      } else {
+        mergedRanges.push({ start: rs, end: re });
+      }
+    }
+
+    // Build a list of booked intervals for overlap checks
+    const bookedIntervals = bookedInterviews.map((i) => {
+      const iStart = new Date(i.date_time).getTime();
+      return { start: iStart, end: iStart + slotDuration };
+    });
+
     for (let dayMsStart = rangeStart.getTime(); dayMsStart < rangeEnd.getTime(); dayMsStart += dayMs) {
       for (let ms = dayMsStart; ms < dayMsStart + dayMs; ms += baseInterval) {
-        const slotStart = new Date(ms);
-        const slotEnd = new Date(ms + slotDuration);
+        if (ms <= nowMs) continue;
 
-        if (slotStart <= nowLocal) continue;
-
-        // Must fit inside an available range
-        const fits = availability.some((range) => {
-          const rs = new Date(range.start_time);
-          const re = new Date(range.end_time);
-          return slotStart >= rs && slotEnd <= re;
-        });
+        // Must fit entirely inside a merged available range
+        const fits = mergedRanges.some(({ start, end }) => ms >= start && ms + slotDuration <= end);
         if (!fits) continue;
 
-        // Must not overlap with any booked interview (scheduled or rescheduled)
-        const isBooked = bookedInterviews.some((i) => {
-          const iStart = new Date(i.date_time).getTime();
-          const iEnd = iStart + slotDuration;
-          return ms < iEnd && ms + slotDuration > iStart;
-        });
+        // Must not overlap with any booked interview
+        const isBooked = bookedIntervals.some(({ start, end }) => ms < end && ms + slotDuration > start);
         if (isBooked) continue;
 
-        const slotDate = slotStart.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
-        const slotTime12 = slotStart.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
-        const hh = slotStart.getHours().toString().padStart(2, "0");
-        const mm = slotStart.getMinutes().toString().padStart(2, "0");
-        const slotTime24 = `${hh}:${mm}`;
-        const endTime12 = slotEnd.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
-
+        // Emit the slot with an ISO timestamp so the client can render
+        // times in the user's local timezone regardless of server timezone.
         timeSlots.push({
-          date: slotDate,
-          time: slotTime12,
-          time24: slotTime24,
-          endTime: endTime12,
+          iso: new Date(ms).toISOString(),
+          isoEnd: new Date(ms + slotDuration).toISOString(),
           duration: `${duration} mins`,
-          iso: slotStart.toISOString(),
         });
       }
     }
 
     const uniqueSlots = timeSlots.filter((slot, index, self) =>
-      index === self.findIndex((t) => t.date === slot.date && t.time24 === slot.time24)
+      index === self.findIndex((t) => t.iso === slot.iso)
     );
 
     return res.json({ success: true, timeSlots: uniqueSlots });
