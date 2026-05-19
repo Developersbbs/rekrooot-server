@@ -747,6 +747,41 @@ router.post("/:id/confirm-slot", async (req, res, next) => {
         const oldCandidate = await Candidate.findById(id);
         if (!oldCandidate) return res.status(404).json({ message: "Candidate not found" });
 
+        // Conflict check: reject if the requested slot is already booked by another candidate
+        let newSlotDate = null;
+        if (startTimeIso) {
+            newSlotDate = new Date(startTimeIso);
+        } else if (interviewDate && interviewTime) {
+            try {
+                const [timePart, periodPart] = interviewTime.split(' ');
+                if (timePart) {
+                    let [hourStr, minuteStr] = timePart.split(':');
+                    let hour = parseInt(hourStr);
+                    if (periodPart === 'PM' && hour !== 12) hour += 12;
+                    else if (periodPart === 'AM' && hour === 12) hour = 0;
+                    const dt = new Date(interviewDate);
+                    if (!isNaN(dt.getTime())) {
+                        dt.setHours(hour, parseInt(minuteStr || '0'), 0, 0);
+                        newSlotDate = dt;
+                    }
+                }
+            } catch (_) { /* ignore parse errors */ }
+        }
+
+        if (newSlotDate && interviewerId && mongoose.Types.ObjectId.isValid(interviewerId)) {
+            const conflict = await Interview.findOne({
+                interviewer_id: interviewerId,
+                date_time: newSlotDate,
+                status: { $in: [0, 1] }, // scheduled or rescheduled
+                candidate_id: { $ne: new mongoose.Types.ObjectId(id) }
+            });
+            if (conflict) {
+                return res.status(409).json({
+                    message: "This time slot is already booked by another candidate. Please select a different slot."
+                });
+            }
+        }
+
         const isReschedule = !!oldCandidate.interview_id;
         const updates = {
             final_status: null,

@@ -9,11 +9,17 @@ const updateInterviewStatuses = async () => {
 
     const now = new Date();
 
-    // Step 1: Get all interviews whose start time has passed
-    const endedInterviews = await Interview.find({
+    // Step 1: Get interviews whose start time has passed, then filter by end time
+    // (date_time + duration_ms <= now means the meeting is actually over)
+    const candidates_for_review = await Interview.find({
       date_time: { $lte: now },
       status: { $in: [0, 1] } // scheduled or rescheduled
-    }).select("_id candidate_id job_id status");
+    }).select("_id candidate_id job_id status date_time duration_ms");
+
+    const endedInterviews = candidates_for_review.filter(i => {
+      const endTime = new Date(i.date_time).getTime() + (i.duration_ms || 3600000);
+      return endTime <= now.getTime();
+    });
 
     if (endedInterviews.length === 0) {
       console.log("No interviews found to update");

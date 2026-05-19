@@ -63,7 +63,26 @@ router.post("/create", async (req, res, next) => {
             interviewer = await Interviewer.findById(interviewerId);
         }
 
-        // 3. Determine Context ID (Presenter ZUID)
+        // 3. Conflict check: reject if this slot is already booked by another candidate
+        const slotToCheck = req.body.startTimeIso ? new Date(req.body.startTimeIso) : (startTime ? new Date(startTime) : null);
+        if (interviewerId && mongoose.Types.ObjectId.isValid(interviewerId) && slotToCheck && !isNaN(slotToCheck.getTime())) {
+            const excludeCandidate = candidateId && mongoose.Types.ObjectId.isValid(candidateId)
+                ? { candidate_id: { $ne: new mongoose.Types.ObjectId(candidateId) } }
+                : {};
+            const conflict = await Interview.findOne({
+                interviewer_id: interviewerId,
+                date_time: slotToCheck,
+                status: { $in: [0, 1] }, // scheduled or rescheduled
+                ...excludeCandidate
+            });
+            if (conflict) {
+                return res.status(409).json({
+                    message: "This time slot is already booked by another candidate. Please select a different slot."
+                });
+            }
+        }
+
+        // 4. Determine Context ID (Presenter ZUID)
         let contextId = presenter;
 
         if (!contextId && interviewer) {
@@ -122,6 +141,7 @@ router.post("/create", async (req, res, next) => {
                 // Prefer startTimeIso (raw UTC ISO string from client) to avoid timezone parse issues.
                 // Fallback to parsing startTime for backwards compatibility.
                 date_time: req.body.startTimeIso ? new Date(req.body.startTimeIso) : new Date(startTime),
+                duration_ms: duration || 3600000,
                 interviewer_name: interviewer?.name || "N/A",
                 meeting_link: meetingLink,
                 session_id: sessionId,

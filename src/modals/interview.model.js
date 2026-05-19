@@ -14,6 +14,7 @@ const interviewSchema = new mongoose.Schema(
         session_id: { type: String },
         presenter_id: { type: String },
         zsoid: { type: String },
+        duration_ms: { type: Number, default: 3600000 }, // meeting duration in ms, default 1 hour
     },
     { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } }
 );
