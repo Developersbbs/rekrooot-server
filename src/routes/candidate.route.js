@@ -251,7 +251,17 @@ router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
         const { id } = req.params;
         const query = { _id: id };
 
-        if (req.user.role !== 0) {
+        if (req.user.role === 4) {
+            // Interviewers can only view candidates assigned to them via an interview
+            const interviewer = await Interviewer.findOne({ email: req.user.email });
+            if (!interviewer) {
+                return res.status(403).json({ message: "Interviewer profile not found" });
+            }
+            const interview = await Interview.findOne({ interviewer_id: interviewer._id, candidate_id: id });
+            if (!interview) {
+                return res.status(403).json({ message: "Access denied: candidate not assigned to you" });
+            }
+        } else if (req.user.role !== 0) {
             query.company_id = req.user.company_id;
         }
 

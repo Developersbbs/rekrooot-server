@@ -7,15 +7,11 @@ const updateInterviewStatuses = async () => {
   try {
     console.log("Running interview status update scheduler...");
 
-    const now = new Date(); // UTC
-    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    const now = new Date();
 
-    console.log("UTC now:", now);
-    console.log("UTC threshold (1 hour ago):", oneHourAgo);
-
-    // Step 1: Get all ended interviews
+    // Step 1: Get all interviews whose start time has passed
     const endedInterviews = await Interview.find({
-      date_time: { $lte: oneHourAgo },
+      date_time: { $lte: now },
       status: { $in: [0, 1] } // scheduled or rescheduled
     }).select("_id candidate_id job_id status");
 
