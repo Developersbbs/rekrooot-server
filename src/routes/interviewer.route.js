@@ -179,7 +179,8 @@ router.get("/public/list", async (req, res, next) => {
       }
 
       merged.forEach(({ start, end }) => {
-        for (let ms = Math.max(start, nowMs); ms + slotDuration <= end; ms += slotDuration) {
+        for (let ms = start; ms + slotDuration <= end; ms += slotDuration) {
+          if (ms + slotDuration <= nowMs) continue; // skip past slots, keep boundary-aligned
           const overlaps = [...booked].some(iStart => ms < iStart + slotDuration && ms + slotDuration > iStart);
           if (overlaps) continue;
           // ISO key — the client converts to its local timezone for display

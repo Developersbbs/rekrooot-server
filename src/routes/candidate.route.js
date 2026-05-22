@@ -16,7 +16,46 @@ import { updateJobCandidateCounts } from "../services/jobService.js";
 
 const router = Router();
 
-async function sendSkillMatchEmail(candidate, jobId) {
+async function getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs, maxSlots = 3) {
+    const [availability, bookedInterviews] = await Promise.all([
+        InterviewerAvailability.find({
+            interviewer: interviewer._id,
+            start_time: { $lt: rangeEnd },
+            end_time: { $gt: now },
+            status: 1,
+        }).sort({ start_time: 1 }).lean(),
+        Interview.find({
+            interviewer_id: interviewer._id,
+            status: { $in: [0, 1] },
+            date_time: { $gte: now, $lt: rangeEnd },
+        }).select('date_time').lean(),
+    ]);
+
+    const slots = [];
+    for (const range of availability) {
+        const rs = new Date(range.start_time).getTime();
+        const re = new Date(range.end_time).getTime();
+        for (let ms = Math.max(rs, now.getTime()); ms + slotMs <= re && slots.length < maxSlots; ms += slotMs) {
+            const slotEnd = ms + slotMs;
+            const overlaps = bookedInterviews.some(i => {
+                const iStart = new Date(i.date_time).getTime();
+                return ms < iStart + slotMs && slotEnd > iStart;
+            });
+            if (!overlaps) {
+                const d = new Date(ms);
+                slots.push(
+                    d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
+                    ' at ' +
+                    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+                );
+            }
+        }
+        if (slots.length >= maxSlots) break;
+    }
+    return slots;
+}
+
+async function sendSkillMatchEmail(candidate, jobId, slotDuration = 30) {
     try {
         const job = await Job.findById(jobId).populate('technologies', 'name');
         if (!job) {
@@ -26,109 +65,98 @@ async function sendSkillMatchEmail(candidate, jobId) {
 
         const jobTitle = job.title || 'the position';
         const candidateName = candidate.full_name;
-        const bookingUrl = `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}`;
 
-        const slotDuration = 30;
         const slotMs = slotDuration * 60 * 1000;
         const now = new Date();
         const rangeEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
-        // Step 1: Try skill-matched interviewers first
-        let interviewersToShow = [];
+        let autoInterviewer = null;
+        let autoSlots = [];
         let isSkillMatch = false;
 
-        if (job.technologies?.length) {
-            const jobTechIds = job.technologies.map(t => t._id.toString());
-            interviewersToShow = await Interviewer.find({
-                technologies: { $in: jobTechIds }
-            }).populate('technologies', 'name').lean();
-            if (interviewersToShow.length) isSkillMatch = true;
-        }
-
-        // Fallback: no skill match → show up to 3 interviewers who have available slots
-        if (!interviewersToShow.length) {
-            const availableInterviewerIds = await InterviewerAvailability.find({
-                start_time: { $lt: rangeEnd },
-                end_time: { $gt: now },
-                status: 1,
-            }).distinct('interviewer');
-
-            if (availableInterviewerIds.length) {
-                interviewersToShow = await Interviewer
-                    .find({ _id: { $in: availableInterviewerIds } })
-                    .populate('technologies', 'name')
-                    .limit(3)
-                    .lean();
+        // If candidate already has an assigned interviewer, use them
+        if (candidate.interviewer_id) {
+            autoInterviewer = await Interviewer.findById(candidate.interviewer_id).populate('technologies', 'name').lean();
+            if (autoInterviewer) {
+                autoSlots = await getInterviewerAvailableSlots(autoInterviewer, now, rangeEnd, slotMs);
             }
         }
 
-        const previews = await Promise.all(
-            interviewersToShow.map(async (interviewer) => {
-                const [availability, bookedInterviews] = await Promise.all([
-                    InterviewerAvailability.find({
-                        interviewer: interviewer._id,
-                        start_time: { $lt: rangeEnd },
-                        end_time: { $gt: now },
-                        status: 1,
-                    }).sort({ start_time: 1 }).lean(),
-                    Interview.find({
-                        interviewer_id: interviewer._id,
-                        status: { $in: [0, 1] },
-                        date_time: { $gte: now, $lt: rangeEnd },
-                    }).select('date_time').lean(),
-                ]);
+        if (!autoInterviewer) {
+            // Step 1: Find a skill-matched interviewer who has open slots
+            if (job.technologies?.length) {
+                const jobTechIds = job.technologies.map(t => t._id.toString());
+                const skillMatched = await Interviewer.find({
+                    technologies: { $in: jobTechIds }
+                }).populate('technologies', 'name').lean();
 
-                const slots = [];
-                for (const range of availability) {
-                    const rs = new Date(range.start_time).getTime();
-                    const re = new Date(range.end_time).getTime();
-                    for (let ms = Math.max(rs, now.getTime()); ms + slotMs <= re && slots.length < 3; ms += slotMs) {
-                        const slotEnd = ms + slotMs;
-                        const overlaps = bookedInterviews.some(i => {
-                            const iStart = new Date(i.date_time).getTime();
-                            return ms < iStart + slotMs && slotEnd > iStart;
-                        });
-                        if (!overlaps) {
-                            const d = new Date(ms);
-                            slots.push(
-                                d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
-                                ' at ' +
-                                d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
-                            );
+                for (const interviewer of skillMatched) {
+                    const slots = await getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs);
+                    if (slots.length > 0) {
+                        autoInterviewer = interviewer;
+                        autoSlots = slots;
+                        isSkillMatch = true;
+                        break;
+                    }
+                }
+            }
+
+            // Step 2: Fallback — any interviewer with open slots
+            if (!autoInterviewer) {
+                const availableInterviewerIds = await InterviewerAvailability.find({
+                    start_time: { $lt: rangeEnd },
+                    end_time: { $gt: now },
+                    status: 1,
+                }).distinct('interviewer');
+
+                if (availableInterviewerIds.length) {
+                    const fallbackInterviewers = await Interviewer
+                        .find({ _id: { $in: availableInterviewerIds } })
+                        .populate('technologies', 'name')
+                        .lean();
+
+                    for (const interviewer of fallbackInterviewers) {
+                        const slots = await getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs);
+                        if (slots.length > 0) {
+                            autoInterviewer = interviewer;
+                            autoSlots = slots;
+                            break;
                         }
                     }
-                    if (slots.length >= 3) break;
                 }
-                return { interviewer, slots };
-            })
-        );
+            }
+        }
 
-        // Step 3: Build email body — show interviewers with slots first, then rest without
-        const withSlots = previews.filter(p => p.slots.length > 0);
-        const displayList = withSlots.length ? withSlots : previews;
+        // Build booking URL — include interviewer ID and slot duration so candidate's booking page is pre-configured
+        const bookingUrl = autoInterviewer
+            ? `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}&interviewerId=${autoInterviewer._id}&duration=${slotDuration}`
+            : `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}&duration=${slotDuration}`;
 
-        const interviewerRows = displayList.map(({ interviewer, slots }) => {
-            const techList = interviewer.technologies?.map(t => t.name).join(', ') || 'General';
-            const slotSection = slots.length
-                ? `<p style="margin:6px 0 4px;font-size:13px;font-weight:500;color:#374151;">Available slots:</p>
-                   <ul style="margin:0;padding-left:18px;font-size:13px;">
-                     ${slots.map(s => `<li style="margin:4px 0;color:#374151;">${s}</li>`).join('')}
-                   </ul>`
-                : `<p style="margin:6px 0 0;font-size:12px;color:#9ca3af;font-style:italic;">Slots will be visible on the booking page</p>`;
-            return `
-                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:12px;">
-                    <p style="margin:0 0 4px;font-weight:600;color:#111827;">${interviewer.name}</p>
-                    <p style="margin:0 0 4px;font-size:13px;color:#6b7280;">Skills: ${techList}</p>
-                    ${slotSection}
-                </div>`;
-        }).join('');
+        // Build the interviewer section for the email
+        let interviewerSection;
+        if (autoInterviewer) {
+            const techList = autoInterviewer.technologies?.map(t => t.name).join(', ') || 'General';
+            const slotListHtml = autoSlots.map(s =>
+                `<li style="margin:4px 0;color:#374151;">${s}</li>`
+            ).join('');
 
-        const interviewerSection = displayList.length
-            ? `<p>${isSkillMatch
-                ? 'We have matched you with the following interviewers based on your skills:'
-                : 'Here are some available interviewers for the <strong>' + jobTitle + '</strong> role:'
-              }</p>${interviewerRows}`
-            : `<p>Our team will review your profile and assign a suitable interviewer shortly.</p>`;
+            interviewerSection = `
+                <p>${isSkillMatch
+                    ? 'Based on your profile, we have assigned an interviewer who matches your skills:'
+                    : 'We have assigned an interviewer for your <strong>' + jobTitle + '</strong> interview:'
+                }</p>
+                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:12px 0;">
+                    <p style="margin:0 0 4px;font-weight:600;color:#111827;">${autoInterviewer.name}</p>
+                    <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">Skills: ${techList}</p>
+                    <p style="margin:6px 0 4px;font-size:13px;font-weight:500;color:#374151;">Available slots:</p>
+                    <ul style="margin:0;padding-left:18px;font-size:13px;">
+                        ${slotListHtml}
+                    </ul>
+                </div>
+                <p style="margin-top:12px;font-size:13px;color:#6b7280;">More slots are available on the booking page. Click below to pick the time that works best for you.</p>`;
+        } else {
+            interviewerSection = `<p>Our team will review your profile and assign a suitable interviewer shortly. You will receive another email once your slot is confirmed.</p>`;
+        }
 
         const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book Your Interview</title></head>
 <body style="font-family:Arial,sans-serif;margin:0;padding:0;background:#f4f4f4;">
@@ -141,10 +169,9 @@ async function sendSkillMatchEmail(candidate, jobId) {
     <h2 style="color:#111827;">Hi <strong>${candidateName}</strong>,</h2>
     <p>Thank you for applying for the <strong>${jobTitle}</strong> position.</p>
     ${interviewerSection}
-    <p style="margin-top:20px;">Click the button below to view all available slots and book your interview at a time that works for you.</p>
-    <div style="text-align:center;margin:28px 0;">
+    ${autoInterviewer ? `<div style="text-align:center;margin:28px 0;">
       <a href="${bookingUrl}" style="background:#fb8404;color:#fff;padding:14px 32px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block;">Book Your Interview Slot</a>
-    </div>
+    </div>` : ''}
     <p style="font-size:13px;color:#6b7280;">If you have any questions, contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p>
     <p>Best regards,<br><strong>The Rekrooot Recruitment Team</strong></p>
   </div>
@@ -166,7 +193,7 @@ async function sendSkillMatchEmail(candidate, jobId) {
             html,
         });
 
-        console.log(`Skill-match email sent to ${candidate.email} for job: ${jobTitle}`);
+        console.log(`Auto-assign email sent to ${candidate.email} for job: ${jobTitle}, interviewer: ${autoInterviewer?.name || 'none'}`);
     } catch (err) {
         console.error("sendSkillMatchEmail error:", err.message);
     }
@@ -206,6 +233,7 @@ router.get("/", requireAuth, attachUser, async (req, res, next) => {
             .populate('client_id', 'name')
             .populate('vendor_id', 'name')
             .populate('company_id', 'name')
+            .populate('interviewer_id', 'name')
             .populate({
                 path: 'interview_id',
                 populate: {
@@ -230,11 +258,11 @@ router.get("/:id/public", async (req, res, next) => {
         }
 
         const candidate = await Candidate.findById(id)
-            .populate('job_id', 'title jobTitle')
+            .populate('job_id', 'title')
             .populate('client_id', 'name logo')
             .populate('company_id', 'name')
             .populate('interview_id')
-            .select('full_name email job_id client_id company_id interview_id created_by vendor_id experience_years');
+            .select('full_name email job_id client_id company_id interview_id interviewer_id created_by vendor_id experience_years');
 
         if (!candidate) {
             return res.status(404).json({ message: "Candidate not found" });
@@ -270,6 +298,7 @@ router.get("/:id", requireAuth, attachUser, async (req, res, next) => {
             .populate('client_id')
             .populate('vendor_id')
             .populate('company_id')
+            .populate('interviewer_id', 'name')
             .populate('created_by', 'username email')
             .populate({
                 path: 'interview_id',
@@ -382,7 +411,9 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             supporting_documents,
             company_id,
             interview_id,
-            skip_invitation_email
+            skip_invitation_email,
+            slot_duration,
+            interviewer_id
         } = req.body;
 
         const target_company_id = req.user.role === 0 ? company_id : req.user.company_id;
@@ -506,7 +537,9 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
             resumes,
             supporting_documents,
             created_by: req.user._id,
-            interview_id
+            interview_id,
+            slot_duration: slot_duration || 30,
+            interviewer_id
         });
 
         // ✅ FIXED: Actually pass the update object to Job.findByIdAndUpdate
@@ -530,7 +563,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
 
         // If no slot was assigned AND recruiter hasn't taken over email, send candidate booking link
         if (!interview_id && !skip_invitation_email && candidate.email && job_id) {
-            sendSkillMatchEmail(candidate, job_id).catch(e =>
+            sendSkillMatchEmail(candidate, job_id, candidate.slot_duration).catch(e =>
                 console.error("Skill-match email failed:", e.message)
             );
         }
@@ -710,7 +743,7 @@ router.put("/:id/migrate", requireAuth, attachUser, async (req, res, next) => {
                 },
                 $set: updateFields,
                 $unset: {
-                    ...(new_interview_id ? {} : { interview_id: "" }),
+                    ...(new_interview_id ? {} : { interview_id: "", interviewer_id: "" }),
                     // If job changed, also unset result data
                     ...(new_job_id && previousJobRole && new_job_id.toString() !== previousJobRole.toString() ? { result: "", result_document_url: "" } : {})
                 }

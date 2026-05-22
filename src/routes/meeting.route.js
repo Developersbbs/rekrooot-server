@@ -1,5 +1,6 @@
 import { Router } from "express";
 import axios from "axios";
+import nodemailer from "nodemailer";
 import { ENV } from "../config/env.js";
 import mongoose from "mongoose";
 import Interviewer from "../modals/interviewer.model.js";
@@ -195,6 +196,77 @@ router.post("/create", async (req, res, next) => {
                 } catch (jobErr) {
                     console.error("Failed to update Job candidate counts:", jobErr.message);
                 }
+            }
+
+            // ✅ Send slot booking confirmation email to candidate (non-blocking)
+            if (candidate?.email) {
+                (async () => {
+                    try {
+                        let jobTitle = 'the position';
+                        if (candidate.job_id) {
+                            const job = await Job.findById(candidate.job_id).select('title').lean().catch(() => null);
+                            jobTitle = job?.title || 'the position';
+                        }
+
+                        const interviewerName = interviewer?.name || 'Interviewer';
+                        const slotDate = new Date(newInterview.date_time);
+                        const scheduledDateTime = slotDate.toLocaleString('en-US', {
+                            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                            hour: 'numeric', minute: '2-digit', hour12: true,
+                        });
+
+                        const bookingTransporter = nodemailer.createTransport({
+                            host: ENV.SMTP_HOST,
+                            port: ENV.SMTP_PORT,
+                            secure: ENV.SMTP_SECURE,
+                            auth: { user: ENV.INTERVIEW_SMTP_USER, pass: ENV.INTERVIEW_SMTP_PASS },
+                        });
+
+                        const confirmationHtml = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interview Confirmed</title></head>
+<body style="font-family:Arial,sans-serif;margin:0;padding:0;background:#f4f4f4;">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1);overflow:hidden;">
+  <div style="background:#2f4858;padding:24px;text-align:center;">
+    <img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="Rekrooot">
+    <h1 style="color:#fff;margin:12px 0 0;font-size:22px;">Interview Slot Confirmed!</h1>
+  </div>
+  <div style="padding:24px;color:#333;">
+    <h2 style="color:#111827;">Hi <strong>${candidate.full_name}</strong>,</h2>
+    <p>Great news! Your interview for the <strong>${jobTitle}</strong> position has been successfully scheduled.</p>
+    <div style="background:#f0f9ff;border-left:4px solid #2f4858;padding:16px;margin:16px 0;border-radius:6px;">
+      <p style="margin:0 0 8px;font-size:14px;"><strong>📅 Date &amp; Time:</strong> ${scheduledDateTime}</p>
+      <p style="margin:0 0 8px;font-size:14px;"><strong>👤 Interviewer:</strong> ${interviewerName}</p>
+      <p style="margin:0;font-size:14px;"><strong>💻 Format:</strong> Virtual (Zoho Meeting)</p>
+    </div>
+    ${meetingLink ? `<div style="text-align:center;margin:24px 0;"><a href="${meetingLink}" style="background:#fb8404;color:#fff;padding:14px 32px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block;">Join Interview</a></div>` : ''}
+    <h3 style="color:#111827;margin-top:20px;">Interview Guidelines</h3>
+    <ul style="margin:10px 0;padding-left:20px;font-size:14px;line-height:1.9;">
+      <li>Make sure you have a <strong>laptop with a working camera</strong>.</li>
+      <li>Set up in a <strong>well-lit</strong> space for clear visibility.</li>
+      <li><strong>Share your desktop</strong> during the interview and avoid external assistance.</li>
+      <li>Close all background applications; using <strong>remote connections</strong> or dual monitors is not allowed.</li>
+      <li>Ensure you have a <strong>strong internet connection</strong> and a webcam.</li>
+      <li>The interview will be <strong>recorded</strong> and will include coding and theoretical questions.</li>
+      <li>Please connect using a <strong>laptop or desktop</strong> — handheld devices are not allowed.</li>
+    </ul>
+    <p style="font-size:13px;color:#6b7280;">If you have any questions, contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p>
+    <p>Best regards,<br><strong>The Rekrooot Recruitment Team</strong></p>
+  </div>
+  <div style="text-align:center;color:#9ca3af;font-size:12px;padding:16px;">© 2026 <a href="#">Rekrooot</a> | All rights reserved.</div>
+</div>
+</body></html>`;
+
+                        await bookingTransporter.sendMail({
+                            from: ENV.INTERVIEW_MAIL_FROM,
+                            to: candidate.email,
+                            subject: `Interview Confirmed – ${jobTitle}`,
+                            html: confirmationHtml,
+                        });
+
+                        console.log(`[meeting] Slot booking confirmation email sent to ${candidate.email} for job: ${jobTitle}`);
+                    } catch (mailErr) {
+                        console.error("[meeting] Failed to send slot booking confirmation email:", mailErr.message);
+                    }
+                })();
             }
 
             return res.status(200).json({

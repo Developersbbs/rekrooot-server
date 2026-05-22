@@ -58,6 +58,10 @@ const candidateSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Interview'
     },
+    interviewer_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Interviewer'
+    },
 
     isMigrated: {
         type: Boolean,
@@ -104,7 +108,11 @@ const candidateSchema = new mongoose.Schema({
         type: Number,
         default: 0
     }, // 0: waiting, 1: scheduled, 2: rescheduled, 3: review, 4: interviewed, 5: cancelled
-    result_document_url: String
+    result_document_url: String,
+    slot_duration: {
+        type: Number,
+        default: 30
+    }
 }, {
     timestamps: true
 });
