@@ -262,7 +262,7 @@ router.get("/:id/public", async (req, res, next) => {
             .populate('client_id', 'name logo')
             .populate('company_id', 'name')
             .populate('interview_id')
-            .select('full_name email job_id client_id company_id interview_id interviewer_id created_by vendor_id experience_years');
+            .select('full_name email job_id client_id company_id interview_id interviewer_id created_by vendor_id experience_years resumes');
 
         if (!candidate) {
             return res.status(404).json({ message: "Candidate not found" });
