@@ -543,7 +543,9 @@ router.get("/:id/interviews", requireAuth, requireSuperAdmin, async (req, res, n
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid interviewer id" });
     }
-    const interviews = await Interview.find({ interviewer_id: id }).sort({ date_time: 1 });
+    const interviews = await Interview.find({ interviewer_id: id })
+      .populate('candidate_id', 'full_name email primary_contact')
+      .sort({ date_time: 1 });
     return res.json({ interviews });
   } catch (err) {
     next(err);
