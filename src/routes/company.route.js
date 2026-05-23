@@ -3,6 +3,15 @@ import mongoose from "mongoose";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 import { User } from "../modals/user.model.js";
 import { Company } from "../modals/company.model.js";
+import { Team } from "../modals/team.model.js";
+import { Job } from "../modals/job.model.js";
+import { Candidate } from "../modals/candidate.model.js";
+import { Client } from "../modals/client.model.js";
+import { Interview } from "../modals/interview.model.js";
+import Interviewer from "../modals/interviewer.model.js";
+import Vendor from "../modals/vendor.model.js";
+import { Invitation } from "../modals/invitation.model.js";
+import { getAdminAuth } from "../config/firebaseAdmin.js";
 
 const router = Router();
 
@@ -67,10 +76,62 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
   }
 });
 
-router.get("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
+router.get("/", requireAuth, requireSuperAdmin, async (_req, res, next) => {
   try {
     const companies = await Company.find({ subscription_status: true }).sort({ created_at: -1 });
     return res.json({ companies });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.delete("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid company ID" });
+    }
+
+    const company = await Company.findById(id);
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
+    }
+
+    const companyId = company._id;
+
+    // Delete all users in this company from Firebase and DB
+    const companyUsers = await User.find({ company_id: companyId });
+    await Promise.all(
+      companyUsers.map(async (u) => {
+        if (u.firebase_uid) {
+          try {
+            await getAdminAuth().deleteUser(u.firebase_uid);
+          } catch {
+            // continue even if Firebase deletion fails
+          }
+        }
+      })
+    );
+
+    const userIds = companyUsers.map((u) => u._id);
+
+    // Cascade delete all company-scoped data
+    await Promise.all([
+      Invitation.deleteMany({ company_id: companyId }),
+      Team.deleteMany({ company_id: companyId }),
+      Interview.deleteMany({ company_id: companyId }),
+      Interviewer.deleteMany({ company_id: companyId }),
+      Job.deleteMany({ company_id: companyId }),
+      Client.deleteMany({ company_id: companyId }),
+      Vendor.deleteMany({ company_id: companyId }),
+      Candidate.deleteMany({ company_id: companyId }),
+      User.deleteMany({ _id: { $in: userIds } }),
+    ]);
+
+    await Company.deleteOne({ _id: companyId });
+
+    return res.json({ message: "Company deleted successfully" });
   } catch (err) {
     return next(err);
   }

@@ -371,6 +371,191 @@ router.get("/me/stats", requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /me/availability - Fetch upcoming availability for the logged-in interviewer
+router.get("/me/availability", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const now = new Date();
+    const { from, to } = req.query;
+    const fromDate = from ? new Date(from) : now;
+    const toDate = to ? new Date(to) : new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 days ahead
+
+    const availability = await InterviewerAvailability.find({
+      interviewer: interviewer._id,
+      start_time: { $lt: toDate },
+      end_time: { $gt: fromDate },
+      status: 1,
+    }).sort({ start_time: 1 });
+
+    return res.json({ availability });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /me/availability - Bulk replace availability for the logged-in interviewer (same as admin PUT but self-service)
+router.put("/me/availability", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const { intervals } = req.body ?? {};
+
+    if (!Array.isArray(intervals) || intervals.length === 0) {
+      // No available slots — delete all available slots for the day range provided via query
+      const { from, to } = req.query ?? {};
+      if (from && to) {
+        await InterviewerAvailability.deleteMany({
+          interviewer: interviewer._id,
+          start_time: { $lt: new Date(to) },
+          end_time: { $gt: new Date(from) },
+          status: 1,
+        });
+      }
+      return res.status(200).json({ availability: [] });
+    }
+
+    const parsed = intervals.map((interval, index) => {
+      const { start_time, end_time } = interval ?? {};
+      const start = new Date(start_time);
+      const end = new Date(end_time);
+      if (!start_time || !end_time || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        throw Object.assign(new Error(`Invalid interval at index ${index}`), { statusCode: 400 });
+      }
+      if (start >= end) {
+        throw Object.assign(new Error(`start_time must be before end_time at index ${index}`), { statusCode: 400 });
+      }
+      return { start, end };
+    });
+
+    const minStart = parsed.reduce((min, p) => (p.start < min ? p.start : min), parsed[0].start);
+    const maxEnd = parsed.reduce((max, p) => (p.end > max ? p.end : max), parsed[0].end);
+
+    await InterviewerAvailability.deleteMany({
+      interviewer: interviewer._id,
+      start_time: { $lt: maxEnd },
+      end_time: { $gt: minStart },
+      status: 1,
+    });
+
+    const docs = parsed.map(({ start, end }) => ({
+      interviewer: interviewer._id,
+      start_time: start,
+      end_time: end,
+    }));
+
+    const created = await InterviewerAvailability.insertMany(docs);
+    return res.status(200).json({ availability: created });
+  } catch (err) {
+    if (err && err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
+    return next(err);
+  }
+});
+
+// POST /me/availability - Add a new availability slot for the logged-in interviewer
+router.post("/me/availability", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const { start_time, end_time } = req.body ?? {};
+    if (!start_time || !end_time) {
+      return res.status(400).json({ message: "start_time and end_time are required" });
+    }
+
+    const start = new Date(start_time);
+    const end = new Date(end_time);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return res.status(400).json({ message: "Invalid start_time or end_time" });
+    }
+
+    if (start >= end) {
+      return res.status(400).json({ message: "start_time must be before end_time" });
+    }
+
+    if (start < new Date()) {
+      return res.status(400).json({ message: "Cannot add availability in the past" });
+    }
+
+    const slot = await InterviewerAvailability.create({
+      interviewer: interviewer._id,
+      start_time: start,
+      end_time: end,
+      status: 1,
+    });
+
+    return res.status(201).json({ slot });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /me/availability/:slotId - Remove an availability slot for the logged-in interviewer
+router.delete("/me/availability/:slotId", requireAuth, async (req, res, next) => {
+  try {
+    const { uid } = req.auth;
+    const user = await User.findOne({ firebase_uid: uid });
+    if (!user || user.role !== 4) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    const interviewer = await Interviewer.findOne({ email: user.email });
+    if (!interviewer) {
+      return res.status(404).json({ message: "Interviewer profile not found" });
+    }
+
+    const { slotId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(slotId)) {
+      return res.status(400).json({ message: "Invalid slot id" });
+    }
+
+    const slot = await InterviewerAvailability.findOne({
+      _id: slotId,
+      interviewer: interviewer._id,
+      status: 1,
+    });
+
+    if (!slot) {
+      return res.status(404).json({ message: "Slot not found or already booked" });
+    }
+
+    await slot.deleteOne();
+
+    return res.json({ message: "Slot removed" });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /me/all - All interviews for the logged-in interviewer (for reports)
 router.get("/me/all", requireAuth, async (req, res, next) => {
   try {
