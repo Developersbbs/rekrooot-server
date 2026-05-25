@@ -234,6 +234,8 @@ router.get("/all-interviews", requireAuth, async (req, res, next) => {
 
     const interviews = await Interview.find(query)
       .populate("interviewer_id", "name email")
+      .populate("candidate_id", "full_name email primary_contact")
+      .populate("job_id", "title")
       .sort({ date_time: -1 });
 
     return res.json({ interviews });
@@ -573,9 +575,10 @@ router.get("/me/all", requireAuth, async (req, res, next) => {
     const interviews = await Interview.find({ interviewer_id: interviewer._id })
       .populate("candidate_id", "full_name email primary_contact")
       .populate("job_id", "title")
+      .populate("interviewer_id", "name email")
       .sort({ date_time: -1 });
 
-    return res.json({ interviews });
+    return res.json({ interviews, interviewer: { name: interviewer.name, email: interviewer.email } });
   } catch (err) {
     next(err);
   }
