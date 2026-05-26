@@ -44,9 +44,9 @@ async function getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs, 
             if (!overlaps) {
                 const d = new Date(ms);
                 slots.push(
-                    d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
+                    d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' }) +
                     ' at ' +
-                    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+                    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
                 );
             }
         }
@@ -253,7 +253,7 @@ router.get("/", requireAuth, attachUser, async (req, res, next) => {
         query.trash = trashFilter;
 
         const candidates = await Candidate.find(query)
-            .populate('job_id', 'title')
+            .populate('job_id', 'title jobTitle description')
             .populate('client_id', 'name')
             .populate('vendor_id', 'name')
             .populate('company_id', 'name')
@@ -282,7 +282,7 @@ router.get("/:id/public", async (req, res, next) => {
         }
 
         const candidate = await Candidate.findById(id)
-            .populate('job_id', 'title')
+            .populate('job_id', 'title jobTitle description')
             .populate('client_id', 'name logo')
             .populate('company_id', 'name')
             .populate('interview_id')
@@ -1204,7 +1204,8 @@ router.post("/:id/restore", requireAuth, attachUser, async (req, res, next) => {
                     const interviewerName = interview.interviewer_id?.name || "Interviewer";
                     const selectedTimeSlot = new Date(interview.date_time).toLocaleString('en-US', {
                         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-                        hour: 'numeric', minute: '2-digit', hour12: true
+                        hour: 'numeric', minute: '2-digit', hour12: true,
+                        timeZone: 'Asia/Kolkata'
                     });
                     const link = interview.meeting_link;
 
