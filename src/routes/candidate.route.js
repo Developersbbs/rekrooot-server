@@ -66,7 +66,8 @@ async function sendSkillMatchEmail(candidate, jobId, slotDuration = 30) {
         const jobTitle = job.title || 'the position';
         const candidateName = candidate.full_name;
 
-        const slotMs = slotDuration * 60 * 1000;
+        const duration = Number(slotDuration) || 30;
+        const slotMs = duration * 60 * 1000;
         const now = new Date();
         const rangeEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
 
@@ -83,80 +84,103 @@ async function sendSkillMatchEmail(candidate, jobId, slotDuration = 30) {
         }
 
         if (!autoInterviewer) {
-            // Step 1: Find a skill-matched interviewer who has open slots
-            if (job.technologies?.length) {
-                const jobTechIds = job.technologies.map(t => t._id.toString());
-                const skillMatched = await Interviewer.find({
-                    technologies: { $in: jobTechIds }
-                }).populate('technologies', 'name').lean();
+            // Safely extract technology IDs — filter out any nulls from broken populate refs
+            const jobTechIds = (job.technologies || [])
+                .filter(t => t && t._id)
+                .map(t => t._id.toString());
 
+            console.log(`sendSkillMatchEmail: job="${job.title}" jobTechIds=${JSON.stringify(jobTechIds)}`);
+
+            // Step 1: Skill-matched interviewers (same technology as the job)
+            if (jobTechIds.length) {
+                const skillMatched = await Interviewer
+                    .find({ technologies: { $in: jobTechIds } })
+                    .populate('technologies', 'name')
+                    .lean();
+
+                console.log(`sendSkillMatchEmail: skill-matched count=${skillMatched.length} names=[${skillMatched.map(i => i.name).join(', ')}]`);
+
+                // 1a: prefer skill-matched WITH available slots
                 for (const interviewer of skillMatched) {
                     const slots = await getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs);
                     if (slots.length > 0) {
                         autoInterviewer = interviewer;
                         autoSlots = slots;
                         isSkillMatch = true;
+                        console.log(`sendSkillMatchEmail: selected skill-match WITH slots: ${interviewer.name}`);
                         break;
                     }
                 }
+
+                // 1b: accept skill-matched even WITHOUT slots
+                if (!autoInterviewer && skillMatched.length > 0) {
+                    autoInterviewer = skillMatched[0];
+                    isSkillMatch = true;
+                    console.log(`sendSkillMatchEmail: selected skill-match (no slots yet): ${autoInterviewer.name}`);
+                }
             }
 
-            // Step 2: Fallback — any interviewer with open slots
+            // Step 2: No skill match found — any interviewer with open slots
             if (!autoInterviewer) {
-                const availableInterviewerIds = await InterviewerAvailability.find({
+                console.log(`sendSkillMatchEmail: no skill match, falling back to any interviewer with slots`);
+                const availableIds = await InterviewerAvailability.find({
                     start_time: { $lt: rangeEnd },
                     end_time: { $gt: now },
                     status: 1,
                 }).distinct('interviewer');
 
-                if (availableInterviewerIds.length) {
-                    const fallbackInterviewers = await Interviewer
-                        .find({ _id: { $in: availableInterviewerIds } })
+                if (availableIds.length) {
+                    const fallbacks = await Interviewer
+                        .find({ _id: { $in: availableIds } })
                         .populate('technologies', 'name')
                         .lean();
 
-                    for (const interviewer of fallbackInterviewers) {
+                    for (const interviewer of fallbacks) {
                         const slots = await getInterviewerAvailableSlots(interviewer, now, rangeEnd, slotMs);
                         if (slots.length > 0) {
                             autoInterviewer = interviewer;
                             autoSlots = slots;
+                            console.log(`sendSkillMatchEmail: selected fallback WITH slots: ${interviewer.name}`);
                             break;
                         }
                     }
                 }
             }
+
+            // Step 3: Last resort — any interviewer in the system
+            if (!autoInterviewer) {
+                autoInterviewer = await Interviewer.findOne().populate('technologies', 'name').lean();
+                console.log(`sendSkillMatchEmail: last-resort interviewer: ${autoInterviewer?.name || 'none'}`);
+            }
         }
 
-        // Build booking URL — include interviewer ID and slot duration so candidate's booking page is pre-configured
-        const bookingUrl = autoInterviewer
-            ? `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}&interviewerId=${autoInterviewer._id}&duration=${slotDuration}`
-            : `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}&duration=${slotDuration}`;
-
-        // Build the interviewer section for the email
-        let interviewerSection;
-        if (autoInterviewer) {
-            const techList = autoInterviewer.technologies?.map(t => t.name).join(', ') || 'General';
-            const slotListHtml = autoSlots.map(s =>
-                `<li style="margin:4px 0;color:#374151;">${s}</li>`
-            ).join('');
-
-            interviewerSection = `
-                <p>${isSkillMatch
-                    ? 'Based on your profile, we have assigned an interviewer who matches your skills:'
-                    : 'We have assigned an interviewer for your <strong>' + jobTitle + '</strong> interview:'
-                }</p>
-                <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:12px 0;">
-                    <p style="margin:0 0 4px;font-weight:600;color:#111827;">${autoInterviewer.name}</p>
-                    <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">Skills: ${techList}</p>
-                    <p style="margin:6px 0 4px;font-size:13px;font-weight:500;color:#374151;">Available slots:</p>
-                    <ul style="margin:0;padding-left:18px;font-size:13px;">
-                        ${slotListHtml}
-                    </ul>
-                </div>
-                <p style="margin-top:12px;font-size:13px;color:#6b7280;">More slots are available on the booking page. Click below to pick the time that works best for you.</p>`;
-        } else {
-            interviewerSection = `<p>Our team will review your profile and assign a suitable interviewer shortly. You will receive another email once your slot is confirmed.</p>`;
+        // No interviewers exist in the system at all — skip
+        if (!autoInterviewer) {
+            console.log(`sendSkillMatchEmail: no interviewers in system, skipping email to ${candidate.email}`);
+            return;
         }
+
+        const bookingUrl = `${ENV.FRONTEND_BASE_URL}/timeslots?candidateId=${candidate._id}&interviewerId=${autoInterviewer._id}&duration=${slotDuration}`;
+
+        const techList = autoInterviewer.technologies?.map(t => t.name).join(', ') || 'General';
+        const slotListHtml = autoSlots.length
+            ? autoSlots.map(s => `<li style="margin:4px 0;color:#374151;">${s}</li>`).join('')
+            : `<li style="margin:4px 0;color:#374151;">Please visit the booking page to see available slots.</li>`;
+
+        const interviewerSection = `
+            <p>${isSkillMatch
+                ? 'Based on your profile, we have assigned an interviewer who matches your skills:'
+                : 'We have assigned an interviewer for your <strong>' + jobTitle + '</strong> interview:'
+            }</p>
+            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin:12px 0;">
+                <p style="margin:0 0 4px;font-weight:600;color:#111827;">${autoInterviewer.name}</p>
+                <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">Skills: ${techList}</p>
+                <p style="margin:6px 0 4px;font-size:13px;font-weight:500;color:#374151;">Available slots:</p>
+                <ul style="margin:0;padding-left:18px;font-size:13px;">
+                    ${slotListHtml}
+                </ul>
+            </div>
+            <p style="margin-top:12px;font-size:13px;color:#6b7280;">More slots are available on the booking page. Click below to pick the time that works best for you.</p>`;
 
         const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book Your Interview</title></head>
 <body style="font-family:Arial,sans-serif;margin:0;padding:0;background:#f4f4f4;">
@@ -169,9 +193,9 @@ async function sendSkillMatchEmail(candidate, jobId, slotDuration = 30) {
     <h2 style="color:#111827;">Hi <strong>${candidateName}</strong>,</h2>
     <p>Thank you for applying for the <strong>${jobTitle}</strong> position.</p>
     ${interviewerSection}
-    ${autoInterviewer ? `<div style="text-align:center;margin:28px 0;">
+    <div style="text-align:center;margin:28px 0;">
       <a href="${bookingUrl}" style="background:#fb8404;color:#fff;padding:14px 32px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block;">Book Your Interview Slot</a>
-    </div>` : ''}
+    </div>
     <p style="font-size:13px;color:#6b7280;">If you have any questions, contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p>
     <p>Best regards,<br><strong>The Rekrooot Recruitment Team</strong></p>
   </div>
@@ -195,7 +219,7 @@ async function sendSkillMatchEmail(candidate, jobId, slotDuration = 30) {
 
         console.log(`Auto-assign email sent to ${candidate.email} for job: ${jobTitle}, interviewer: ${autoInterviewer?.name || 'none'}`);
     } catch (err) {
-        console.error("sendSkillMatchEmail error:", err.message);
+        console.error("sendSkillMatchEmail error:", err.message, err.stack);
     }
 }
 
@@ -1053,37 +1077,7 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
             .populate('client_id', 'name');
         if (!candidate) return res.status(404).json({ message: "Candidate not found or unauthorized" });
 
-        // Send Emails based on status
-        if (candidate.status === 0) {
-            // Send Declined Email
-            try {
-                const transporter = nodemailer.createTransport({
-                    host: ENV.SMTP_HOST,
-                    port: ENV.SMTP_PORT,
-                    secure: ENV.SMTP_SECURE,
-                    auth: {
-                        user: ENV.NEWUSER_SMTP_USER,
-                        pass: ENV.NEWUSER_SMTP_PASS
-                    }
-                });
-
-                const candidateName = candidate.full_name;
-                const jobTitle = candidate.job_id?.jobTitle || candidate.job_id?.title || "Position";
-                const clientName = candidate.client_id?.name || "Company";
-
-                const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Application Update</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#2f4858;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.info-box{background-color:#f0f9ff;border-left:4px solid #2f4858;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Application Update</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>Thank you for your interest in the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong>.</p><p>We would like to inform you that your application for this position has been <strong>declined</strong> and moved to our archive.</p><div class="info-box"><strong>Role:</strong> ${jobTitle}<br><strong>Status:</strong> Declined</div><p>We appreciate the time you took to apply. If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Recruitment Team</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
-
-                await transporter.sendMail({
-                    from: ENV.NEWUSER_MAIL_FROM,
-                    to: candidate.email,
-                    subject: `Application Update - ${candidateName} for ${jobTitle}`,
-                    html
-                });
-            } catch (mailErr) {
-                console.error("Failed to send decline email from backend:", mailErr.message);
-            }
-        }
-        else if ([1, 2].includes(candidate.status) || (candidate.interview_id && [0, 1, 2].includes(candidate.interview_id.status))) {
+        if ([1, 2].includes(candidate.status) || (candidate.interview_id && [0, 1, 2].includes(candidate.interview_id.status))) {
             // Existing cancellation logic (already there, but wrapped for clarity)
             const interview = candidate.interview_id;
             try {
@@ -1114,33 +1108,6 @@ router.delete("/:id", requireAuth, attachUser, async (req, res, next) => {
                     { status: 1, $unset: { candidate_id: "" } }
                 ).catch(e => console.error("Failed to free availability during delete:", e));
 
-                // 3. Send Cancellation Email to Candidate
-                try {
-                    const transporter = nodemailer.createTransport({
-                        host: ENV.SMTP_HOST,
-                        port: ENV.SMTP_PORT,
-                        secure: ENV.SMTP_SECURE,
-                        auth: {
-                            user: ENV.NEWUSER_SMTP_USER,
-                            pass: ENV.NEWUSER_SMTP_PASS
-                        }
-                    });
-
-                    const candidateName = candidate.full_name;
-                    const jobTitle = candidate.job_id?.jobTitle || candidate.job_id?.title || "Position";
-                    const clientName = candidate.client_id?.name || "Company";
-
-                    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Interview Cancelled</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4}.container{background-color:#fff;margin:0 auto;padding:20px;max-width:600px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}.header{background-color:#d32f2f;color:#fff;padding:20px;text-align:center;border-top-left-radius:8px;border-top-right-radius:8px}.header h1{margin:0;font-size:24px}.content{padding:20px;color:#333;line-height:1.6}.content p{margin:0 0 10px}.footer{text-align:center;color:#777;font-size:12px;margin-top:20px}h2{color:#333;margin-top:20px}.cancel-box{background-color:#fffef0;border-left:4px solid #d32f2f;padding:15px;margin:20px 0;border-radius:4px}</style></head><body><div class="container"><div class="header"><img width="100" src="https://firebasestorage.googleapis.com/v0/b/x-talento-new.appspot.com/o/assets%2Flogo.png?alt=media&token=0e681b04-04b6-4ebc-855e-dfcc3f9acabe" alt="rekrooot-img"><h1>Interview Cancelled</h1></div><div class="content"><h2>Dear <strong>${candidateName}</strong>,</h2><p>This is to inform you that your interview for the <strong>${jobTitle}</strong> position with <strong>${clientName}</strong> has been <strong>cancelled</strong> because your profile has been withdrawn or archived.</p><div class="cancel-box"><strong>Position:</strong> ${jobTitle}<br><strong>Company:</strong> ${clientName}</div><p>We apologize for any inconvenience this may have caused. If you have any questions, please contact us at <a href="mailto:hr@rekrooot.com">hr@rekrooot.com</a>.</p><p>Best regards,<br>The Rekrooot Interview Panel</p></div><div class="footer"><p> © 2026 <a href="#">Rekrooot</a> | All rights reserved.</p></div></div></body></html>`;
-
-                    await transporter.sendMail({
-                        from: ENV.NEWUSER_MAIL_FROM,
-                        to: candidate.email,
-                        subject: `Interview Cancelled - ${candidateName} for ${jobTitle}`,
-                        html
-                    });
-                } catch (mailErr) {
-                    console.error("Failed to send cancellation email from backend:", mailErr.message);
-                }
             } catch (error) {
                 console.error("Error during automatic interview cancellation:", error.message);
             }
