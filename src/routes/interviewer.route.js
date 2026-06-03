@@ -40,6 +40,7 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
       contact,
       logo,
       zoho_meet_uid,
+      job_role,
       technologies,
     } = req.body || {};
 
@@ -67,6 +68,10 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res, next) => {
 
     if (zoho_meet_uid && typeof zoho_meet_uid === "string") {
       payload.zoho_meet_uid = zoho_meet_uid.trim();
+    }
+
+    if (job_role && typeof job_role === "string") {
+      payload.job_role = job_role.trim();
     }
 
     if (Array.isArray(technologies)) {
@@ -622,6 +627,7 @@ router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
       contact,
       logo,
       zoho_meet_uid,
+      job_role,
       technologies,
     } = req.body || {};
 
@@ -662,6 +668,14 @@ router.put("/:id", requireAuth, requireSuperAdmin, async (req, res, next) => {
         update.zoho_meet_uid = zoho_meet_uid.trim();
       } else {
         update.zoho_meet_uid = undefined;
+      }
+    }
+
+    if (job_role !== undefined) {
+      if (job_role && typeof job_role === "string") {
+        update.job_role = job_role.trim();
+      } else {
+        update.job_role = undefined;
       }
     }
 

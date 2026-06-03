@@ -31,6 +31,10 @@ const interviewerSchema = new Schema(
       type: String,
       trim: true,
     },
+    job_role: {
+      type: String,
+      trim: true,
+    },
     technologies: [
       {
         type: Schema.Types.ObjectId,
