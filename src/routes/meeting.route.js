@@ -166,15 +166,54 @@ router.post("/create", async (req, res, next) => {
 
             const isoStart = req.body.startTimeIso || startTime;
             if (interviewer && isoStart) {
-                const startDate = new Date(isoStart);
-                try {
-                    const availability = await InterviewerAvailability.findOneAndUpdate(
-                        { interviewer: interviewerId, start_time: startDate },
-                        { status: 2, candidate_id: candidateId },
-                        { new: true }
-                    );
+                const bookingStart = new Date(isoStart);
+                // duration in the request body is in milliseconds (slotDuration * 60 * 1000)
+                const bookingDurationMs = req.body.duration || 3600000;
+                const bookingEnd = new Date(bookingStart.getTime() + bookingDurationMs);
 
-                    if (!availability) {
+                try {
+                    // Find all availability records that overlap with the booking window
+                    const overlapping = await InterviewerAvailability.find({
+                        interviewer: interviewerId,
+                        start_time: { $lt: bookingEnd },
+                        end_time: { $gt: bookingStart },
+                        status: 1,
+                    });
+
+                    if (overlapping.length > 0) {
+                        await InterviewerAvailability.deleteMany({
+                            _id: { $in: overlapping.map(a => a._id) },
+                        });
+
+                        const newDocs = [];
+                        for (const avail of overlapping) {
+                            const aStart = new Date(avail.start_time).getTime();
+                            const aEnd = new Date(avail.end_time).getTime();
+                            const bStart = bookingStart.getTime();
+                            const bEnd = bookingEnd.getTime();
+
+                            // Keep the portion before the booking as available
+                            if (aStart < bStart) {
+                                newDocs.push({ interviewer: interviewerId, start_time: new Date(aStart), end_time: new Date(bStart), status: 1 });
+                            }
+
+                            // Mark the booked intersection as status 2
+                            newDocs.push({
+                                interviewer: interviewerId,
+                                start_time: new Date(Math.max(aStart, bStart)),
+                                end_time: new Date(Math.min(aEnd, bEnd)),
+                                status: 2,
+                                candidate_id: candidateId,
+                            });
+
+                            // Keep the portion after the booking as available
+                            if (aEnd > bEnd) {
+                                newDocs.push({ interviewer: interviewerId, start_time: new Date(bEnd), end_time: new Date(aEnd), status: 1 });
+                            }
+                        }
+
+                        await InterviewerAvailability.insertMany(newDocs);
+                    } else {
                         console.warn("No InterviewerAvailability slot found to book for:", { interviewerId, isoStart });
                     }
                 } catch (availErr) {
