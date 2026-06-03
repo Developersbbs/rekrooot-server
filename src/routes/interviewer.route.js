@@ -784,9 +784,6 @@ router.get("/:id/timeslots", async (req, res, next) => {
     const timeSlots = [];
     const nowMs = Date.now();
     const baseInterval = parseInt(duration) * 60 * 1000;
-    const rangeStart = new Date(from);
-    const rangeEnd = new Date(to);
-    const dayMs = 24 * 60 * 60 * 1000;
 
     // Merge adjacent/overlapping availability intervals so that slots spanning
     // multiple stored records (e.g., consecutive 30-min DB entries) still match
@@ -809,20 +806,17 @@ router.get("/:id/timeslots", async (req, res, next) => {
       return { start: iStart, end: iStart + slotDuration };
     });
 
-    for (let dayMsStart = rangeStart.getTime(); dayMsStart < rangeEnd.getTime(); dayMsStart += dayMs) {
-      for (let ms = dayMsStart; ms < dayMsStart + dayMs; ms += baseInterval) {
+    // Iterate each merged availability window starting from its exact start time.
+    // This ensures slots align with the interviewer's set times regardless of
+    // the server's timezone offset.
+    for (const { start, end } of mergedRanges) {
+      for (let ms = start; ms + slotDuration <= end; ms += baseInterval) {
         if (ms <= nowMs) continue;
 
-        // Must fit entirely inside a merged available range
-        const fits = mergedRanges.some(({ start, end }) => ms >= start && ms + slotDuration <= end);
-        if (!fits) continue;
-
         // Must not overlap with any booked interview
-        const isBooked = bookedIntervals.some(({ start, end }) => ms < end && ms + slotDuration > start);
+        const isBooked = bookedIntervals.some(({ start: bs, end: be }) => ms < be && ms + slotDuration > bs);
         if (isBooked) continue;
 
-        // Emit the slot with an ISO timestamp so the client can render
-        // times in the user's local timezone regardless of server timezone.
         timeSlots.push({
           iso: new Date(ms).toISOString(),
           isoEnd: new Date(ms + slotDuration).toISOString(),
