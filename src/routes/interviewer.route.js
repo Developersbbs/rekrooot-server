@@ -778,7 +778,7 @@ router.get("/:id/timeslots", async (req, res, next) => {
         interviewer_id: id,
         status: { $in: [0, 1] },
         date_time: { $gte: new Date(from), $lt: new Date(to) },
-      }).select("date_time"),
+      }).select("date_time duration_ms"),
     ]);
 
     const timeSlots = [];
@@ -800,10 +800,13 @@ router.get("/:id/timeslots", async (req, res, next) => {
       }
     }
 
-    // Build a list of booked intervals for overlap checks
+    // Build a list of booked intervals using each interview's actual duration,
+    // not the requested slot duration. This ensures e.g. a 30-min booking blocks
+    // 20-min and 40-min slots that overlap with the booked window.
     const bookedIntervals = bookedInterviews.map((i) => {
       const iStart = new Date(i.date_time).getTime();
-      return { start: iStart, end: iStart + slotDuration };
+      const iDuration = i.duration_ms || 3600000;
+      return { start: iStart, end: iStart + iDuration };
     });
 
     // Iterate each merged availability window starting from its exact start time.
