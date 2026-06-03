@@ -164,8 +164,9 @@ router.post("/create", async (req, res, next) => {
                 });
             }
 
-            if (interviewer && startTime) {
-                const startDate = new Date(startTime);
+            const isoStart = req.body.startTimeIso || startTime;
+            if (interviewer && isoStart) {
+                const startDate = new Date(isoStart);
                 try {
                     const availability = await InterviewerAvailability.findOneAndUpdate(
                         { interviewer: interviewerId, start_time: startDate },
@@ -174,7 +175,7 @@ router.post("/create", async (req, res, next) => {
                     );
 
                     if (!availability) {
-                        console.warn("No InterviewerAvailability slot found to book for:", { interviewerId, startTime });
+                        console.warn("No InterviewerAvailability slot found to book for:", { interviewerId, isoStart });
                     }
                 } catch (availErr) {
                     console.error("Failed to update InterviewerAvailability status:", availErr.message);
