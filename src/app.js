@@ -46,6 +46,11 @@ app.use("/meetings", meetingRoute);
 app.use("/emails", emailRoute);
 
 
+/* server time — used by clients to compute clock offset */
+app.get("/time", (_req, res) => {
+  res.json({ utc: Date.now() });
+});
+
 /* 404 */
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });
