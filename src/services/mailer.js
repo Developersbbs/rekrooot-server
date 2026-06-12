@@ -14,11 +14,26 @@ function getMissingSmtpKeys() {
   const missing = [];
 
   if (!ENV.SMTP_HOST) missing.push("NEWUSER_SMTP_HOST");
-  if (!ENV.SMTP_PORT || Number.isNaN(ENV.NEWUSER_SMTP_PORT)) missing.push("NEWUSER_SMTP_PORT");
+  if (!ENV.SMTP_PORT || Number.isNaN(ENV.SMTP_PORT)) missing.push("SMTP_PORT");
   if (ENV.NEWUSER_SMTP_USER && !ENV.NEWUSER_SMTP_PASS) missing.push("NEWUSER_SMTP_PASS");
   if (!ENV.NEWUSER_MAIL_FROM) missing.push("NEWUSER_MAIL_FROM");
 
   return missing;
+}
+
+function getForgotPasswordTransporter() {
+  if (!ENV.SMTP_USER || !ENV.FROM_EMAIL) {
+    throw new Error("SMTP is not configured for forgot password (missing: SMTP_USER or FROM_EMAIL)");
+  }
+  return nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: {
+      user: ENV.SMTP_USER,
+      pass: ENV.SMTP_PASS,
+    },
+  });
 }
 
 let cachedTransporter = null;
@@ -71,22 +86,18 @@ export async function sendInvitationEmail({
 }
 
 export async function sendPasswordResetEmailSMTP({ to, resetUrl }) {
-  const transporter = getTransporter();
-  if (!transporter) {
-    const missing = getMissingSmtpKeys();
-    throw new Error(
-      missing.length
-        ? `SMTP is not configured (missing: ${missing.join(", ")})`
-        : "SMTP is not configured",
-    );
-  }
+  const transporter = getForgotPasswordTransporter();
+
+  const fromAddress = ENV.FROM_NAME
+    ? `"${ENV.FROM_NAME}" <${ENV.FROM_EMAIL}>`
+    : ENV.FROM_EMAIL;
 
   const subject = "Reset your Rekrooot password";
   const text = `You requested a password reset for your Rekrooot account.\n\nClick the link below to set a new password (valid for 1 hour):\n${resetUrl}\n\nIf you did not request this, you can safely ignore this email.\n\nBest regards,\nThe Rekrooot Team`;
   const html = `<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Password Reset</title><style>body{font-family:Arial,sans-serif;margin:0;padding:20px;background-color:#f4f4f4}.container{background-color:#fff;padding:30px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1);max-width:600px;margin:0 auto}.header{text-align:center;margin-bottom:24px}.button{margin:24px 0;text-align:center}.button a{background-color:#fb8404;color:#fff;padding:14px 28px;text-decoration:none;border-radius:6px;font-weight:600;font-size:16px;display:inline-block}.footer{margin-top:24px;font-size:12px;color:#9ca3af;text-align:center}</style></head><body><div class='container'><div class='header'><h1 style='color:#2f4858'>Password Reset</h1></div><p>Hi,</p><p>We received a request to reset the password for your <strong>Rekrooot</strong> account associated with <strong>${to}</strong>.</p><p>Click the button below to set a new password. This link is valid for <strong>1 hour</strong>.</p><div class='button'><a href='${resetUrl}'>Reset Password</a></div><p>If you didn't request a password reset, you can safely ignore this email — your password will remain unchanged.</p><p>Best regards,<br><strong>The Rekrooot Team</strong></p><div class='footer'>Powered by Rekrooot Recruitment Platform</div></div></body></html>`;
 
   const info = await transporter.sendMail({
-    from: ENV.NEWUSER_MAIL_FROM,
+    from: fromAddress,
     to,
     subject,
     text,
