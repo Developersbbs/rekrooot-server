@@ -198,7 +198,7 @@ router.post("/", requireAuth, attachUser, async (req, res, next) => {
     let mail_error = null;
 
     try {
-      await sendInvitationEmail({ to: emailNormalized, inviteUrl });
+      await sendInvitationEmail({ to: emailNormalized, inviteUrl, role: roleId });
       mail_sent = true;
     } catch (mailErr) {
       mail_error =
